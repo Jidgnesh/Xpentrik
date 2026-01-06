@@ -1,0 +1,462 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  Dimensions,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
+import { format, startOfMonth, endOfMonth, subMonths, startOfWeek, endOfWeek, eachDayOfInterval, isSameDay } from 'date-fns';
+import { colors } from '../theme/colors';
+import { getExpenses, DEFAULT_CATEGORIES } from '../utils/storage';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+
+const AnalyticsScreen = () => {
+  const insets = useSafeAreaInsets();
+  const [expenses, setExpenses] = useState([]);
+  const [selectedPeriod, setSelectedPeriod] = useState('month'); // 'week', 'month', 'year'
+  const [categoryData, setCategoryData] = useState([]);
+  const [weeklyData, setWeeklyData] = useState([]);
+
+  const loadData = useCallback(async () => {
+    try {
+      const data = await getExpenses();
+      setExpenses(data);
+      
+      // Filter by period
+      const now = new Date();
+      let startDate, endDate;
+      
+      if (selectedPeriod === 'week') {
+        startDate = startOfWeek(now, { weekStartsOn: 1 });
+        endDate = endOfWeek(now, { weekStartsOn: 1 });
+      } else if (selectedPeriod === 'month') {
+        startDate = startOfMonth(now);
+        endDate = endOfMonth(now);
+      } else {
+        startDate = subMonths(now, 12);
+        endDate = now;
+      }
+
+      const filtered = data.filter(e => {
+        const date = new Date(e.date || e.createdAt);
+        return date >= startDate && date <= endDate;
+      });
+
+      // Calculate category totals
+      const categoryTotals = {};
+      filtered.forEach(e => {
+        const cat = e.category || 'other';
+        categoryTotals[cat] = (categoryTotals[cat] || 0) + (parseFloat(e.amount) || 0);
+      });
+
+      const total = Object.values(categoryTotals).reduce((a, b) => a + b, 0);
+      
+      const categoryArray = Object.entries(categoryTotals)
+        .map(([id, amount]) => {
+          const category = DEFAULT_CATEGORIES.find(c => c.id === id) || DEFAULT_CATEGORIES[DEFAULT_CATEGORIES.length - 1];
+          return {
+            ...category,
+            amount,
+            percentage: total > 0 ? (amount / total) * 100 : 0,
+          };
+        })
+        .sort((a, b) => b.amount - a.amount);
+
+      setCategoryData(categoryArray);
+
+      // Calculate weekly breakdown for chart
+      const weekStart = startOfWeek(now, { weekStartsOn: 1 });
+      const weekEnd = endOfWeek(now, { weekStartsOn: 1 });
+      const days = eachDayOfInterval({ start: weekStart, end: weekEnd });
+      
+      const dailyTotals = days.map(day => {
+        const dayExpenses = data.filter(e => {
+          const expenseDate = new Date(e.date || e.createdAt);
+          return isSameDay(expenseDate, day);
+        });
+        const total = dayExpenses.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
+        return {
+          day: format(day, 'EEE'),
+          date: format(day, 'd'),
+          total,
+          isToday: isSameDay(day, now),
+        };
+      });
+
+      setWeeklyData(dailyTotals);
+    } catch (error) {
+      console.error('Error loading analytics:', error);
+    }
+  }, [selectedPeriod]);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  const formatCurrency = (amount) => {
+    return amount.toLocaleString('en-IN', {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    });
+  };
+
+  const totalSpent = categoryData.reduce((sum, c) => sum + c.amount, 0);
+  const maxDailySpend = Math.max(...weeklyData.map(d => d.total), 1);
+
+  return (
+    <View style={[styles.container, { paddingTop: insets.top }]}>
+      <ScrollView showsVerticalScrollIndicator={false}>
+        {/* Header */}
+        <View style={styles.header}>
+          <Text style={styles.title}>Analytics</Text>
+          <Text style={styles.subtitle}>Track your spending patterns</Text>
+        </View>
+
+        {/* Period Selector */}
+        <View style={styles.periodSelector}>
+          {['week', 'month', 'year'].map((period) => (
+            <TouchableOpacity
+              key={period}
+              style={[
+                styles.periodButton,
+                selectedPeriod === period && styles.periodButtonActive,
+              ]}
+              onPress={() => setSelectedPeriod(period)}
+            >
+              <Text
+                style={[
+                  styles.periodButtonText,
+                  selectedPeriod === period && styles.periodButtonTextActive,
+                ]}
+              >
+                {period.charAt(0).toUpperCase() + period.slice(1)}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        {/* Total Card */}
+        <LinearGradient
+          colors={['#ff6b35', '#ff8c5a']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.totalCard}
+        >
+          <Text style={styles.totalLabel}>Total Spent</Text>
+          <View style={styles.totalAmountRow}>
+            <Text style={styles.totalCurrency}>₹</Text>
+            <Text style={styles.totalAmount}>{formatCurrency(totalSpent)}</Text>
+          </View>
+          <Text style={styles.totalPeriod}>
+            {selectedPeriod === 'week' ? 'This Week' : selectedPeriod === 'month' ? 'This Month' : 'Last 12 Months'}
+          </Text>
+        </LinearGradient>
+
+        {/* Weekly Chart */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Weekly Overview</Text>
+          <View style={styles.chart}>
+            {weeklyData.map((day, index) => (
+              <View key={index} style={styles.chartColumn}>
+                <View style={styles.barContainer}>
+                  <View
+                    style={[
+                      styles.bar,
+                      {
+                        height: `${(day.total / maxDailySpend) * 100}%`,
+                        backgroundColor: day.isToday ? colors.primary : colors.surfaceLight,
+                      },
+                    ]}
+                  />
+                </View>
+                <Text style={[styles.chartDay, day.isToday && styles.chartDayActive]}>
+                  {day.day}
+                </Text>
+                <Text style={styles.chartDate}>{day.date}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+
+        {/* Category Breakdown */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>By Category</Text>
+          
+          {categoryData.length === 0 ? (
+            <View style={styles.emptyCategory}>
+              <Text style={styles.emptyCategoryText}>No expenses in this period</Text>
+            </View>
+          ) : (
+            categoryData.map((category, index) => (
+              <View key={category.id} style={styles.categoryItem}>
+                <View style={styles.categoryLeft}>
+                  <View style={[styles.categoryIcon, { backgroundColor: `${category.color}20` }]}>
+                    <Text style={styles.categoryEmoji}>{category.icon}</Text>
+                  </View>
+                  <View>
+                    <Text style={styles.categoryName}>{category.name}</Text>
+                    <Text style={styles.categoryPercentage}>
+                      {category.percentage.toFixed(1)}% of total
+                    </Text>
+                  </View>
+                </View>
+                <Text style={styles.categoryAmount}>₹{formatCurrency(category.amount)}</Text>
+              </View>
+            ))
+          )}
+        </View>
+
+        {/* Insights */}
+        <View style={[styles.section, styles.insightsSection]}>
+          <Text style={styles.sectionTitle}>Quick Insights</Text>
+          
+          <View style={styles.insightCard}>
+            <Text style={styles.insightIcon}>📈</Text>
+            <View style={styles.insightContent}>
+              <Text style={styles.insightTitle}>Top Category</Text>
+              <Text style={styles.insightValue}>
+                {categoryData[0]?.name || 'N/A'} - ₹{formatCurrency(categoryData[0]?.amount || 0)}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.insightCard}>
+            <Text style={styles.insightIcon}>💰</Text>
+            <View style={styles.insightContent}>
+              <Text style={styles.insightTitle}>Average Daily</Text>
+              <Text style={styles.insightValue}>
+                ₹{formatCurrency(totalSpent / (selectedPeriod === 'week' ? 7 : selectedPeriod === 'month' ? 30 : 365))}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.insightCard}>
+            <Text style={styles.insightIcon}>📊</Text>
+            <View style={styles.insightContent}>
+              <Text style={styles.insightTitle}>Total Transactions</Text>
+              <Text style={styles.insightValue}>{expenses.length}</Text>
+            </View>
+          </View>
+        </View>
+
+        <View style={{ height: 40 }} />
+      </ScrollView>
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  header: {
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 8,
+  },
+  title: {
+    fontSize: 32,
+    fontWeight: '800',
+    color: colors.text,
+    letterSpacing: -1,
+  },
+  subtitle: {
+    fontSize: 15,
+    color: colors.textMuted,
+    marginTop: 4,
+  },
+  periodSelector: {
+    flexDirection: 'row',
+    marginHorizontal: 20,
+    marginVertical: 20,
+    backgroundColor: colors.surface,
+    borderRadius: 14,
+    padding: 4,
+  },
+  periodButton: {
+    flex: 1,
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderRadius: 10,
+  },
+  periodButtonActive: {
+    backgroundColor: colors.primary,
+  },
+  periodButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.textSecondary,
+  },
+  periodButtonTextActive: {
+    color: colors.text,
+  },
+  totalCard: {
+    marginHorizontal: 20,
+    borderRadius: 24,
+    padding: 28,
+    marginBottom: 24,
+  },
+  totalLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: 'rgba(255,255,255,0.7)',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  totalAmountRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginVertical: 8,
+  },
+  totalCurrency: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: colors.text,
+    marginRight: 4,
+    marginTop: 8,
+  },
+  totalAmount: {
+    fontSize: 48,
+    fontWeight: '800',
+    color: colors.text,
+    letterSpacing: -2,
+  },
+  totalPeriod: {
+    fontSize: 15,
+    color: 'rgba(255,255,255,0.8)',
+  },
+  section: {
+    paddingHorizontal: 20,
+    marginBottom: 28,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: 16,
+  },
+  chart: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-end',
+    height: 160,
+    backgroundColor: colors.surface,
+    borderRadius: 20,
+    padding: 20,
+    paddingBottom: 12,
+  },
+  chartColumn: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  barContainer: {
+    flex: 1,
+    width: 24,
+    justifyContent: 'flex-end',
+    marginBottom: 8,
+  },
+  bar: {
+    width: '100%',
+    borderRadius: 6,
+    minHeight: 4,
+  },
+  chartDay: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textMuted,
+  },
+  chartDayActive: {
+    color: colors.primary,
+  },
+  chartDate: {
+    fontSize: 11,
+    color: colors.textMuted,
+    marginTop: 2,
+  },
+  emptyCategory: {
+    backgroundColor: colors.surface,
+    borderRadius: 16,
+    padding: 32,
+    alignItems: 'center',
+  },
+  emptyCategoryText: {
+    fontSize: 15,
+    color: colors.textMuted,
+  },
+  categoryItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 10,
+  },
+  categoryLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  categoryIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 14,
+  },
+  categoryEmoji: {
+    fontSize: 22,
+  },
+  categoryName: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.text,
+    marginBottom: 2,
+  },
+  categoryPercentage: {
+    fontSize: 13,
+    color: colors.textMuted,
+  },
+  categoryAmount: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  insightsSection: {
+    paddingBottom: 20,
+  },
+  insightCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: 16,
+    padding: 18,
+    marginBottom: 10,
+  },
+  insightIcon: {
+    fontSize: 28,
+    marginRight: 16,
+  },
+  insightContent: {
+    flex: 1,
+  },
+  insightTitle: {
+    fontSize: 13,
+    color: colors.textMuted,
+    marginBottom: 4,
+  },
+  insightValue: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: colors.text,
+  },
+});
+
+export default AnalyticsScreen;
+

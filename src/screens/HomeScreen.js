@@ -1,0 +1,507 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  FlatList,
+  TouchableOpacity,
+  RefreshControl,
+  StatusBar,
+  Alert,
+} from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { format, startOfMonth, endOfMonth, startOfDay, endOfDay } from 'date-fns';
+import { colors } from '../theme/colors';
+import ExpenseCard from '../components/ExpenseCard';
+import StatCard from '../components/StatCard';
+import AddExpenseModal from '../components/AddExpenseModal';
+import { getExpenses, deleteExpense, getSettings, DEFAULT_CATEGORIES } from '../utils/storage';
+import { getSMSStatus, scanForNewExpenses, startSmsListener, stopSmsListener, requestSMSPermission } from '../services/smsService';
+
+const HomeScreen = () => {
+  const insets = useSafeAreaInsets();
+  const [expenses, setExpenses] = useState([]);
+  const [monthlyTotal, setMonthlyTotal] = useState(0);
+  const [todayTotal, setTodayTotal] = useState(0);
+  const [settings, setSettings] = useState({ currency: '₹', monthlyBudget: 50000 });
+  const [refreshing, setRefreshing] = useState(false);
+  const [modalVisible, setModalVisible] = useState(false);
+  const [smsStatus, setSmsStatus] = useState(null);
+
+  // Handle new expense from SMS listener
+  const handleNewSmsExpense = useCallback((expense) => {
+    Alert.alert(
+      '💸 New Expense Detected!',
+      `₹${expense.amount} - ${expense.description}`,
+      [{ text: 'OK' }]
+    );
+    loadData();
+  }, []);
+
+  // Start SMS listener on mount
+  useEffect(() => {
+    const initSmsListener = async () => {
+      const status = await getSMSStatus();
+      if (status.supported && status.permissionGranted) {
+        startSmsListener(handleNewSmsExpense);
+      } else if (status.supported && !status.permissionGranted) {
+        // Request permission on first launch
+        const granted = await requestSMSPermission();
+        if (granted) {
+          startSmsListener(handleNewSmsExpense);
+        }
+      }
+    };
+
+    initSmsListener();
+
+    return () => {
+      stopSmsListener();
+    };
+  }, [handleNewSmsExpense]);
+
+  const loadData = useCallback(async () => {
+    try {
+      const [expensesData, settingsData, smsStatusData] = await Promise.all([
+        getExpenses(),
+        getSettings(),
+        getSMSStatus(),
+      ]);
+
+      setExpenses(expensesData);
+      setSettings(settingsData);
+      setSmsStatus(smsStatusData);
+
+      // Calculate monthly total
+      const now = new Date();
+      const monthStart = startOfMonth(now);
+      const monthEnd = endOfMonth(now);
+      const monthExpenses = expensesData.filter(e => {
+        const date = new Date(e.date || e.createdAt);
+        return date >= monthStart && date <= monthEnd;
+      });
+      const monthTotal = monthExpenses.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
+      setMonthlyTotal(monthTotal);
+
+      // Calculate today's total
+      const dayStart = startOfDay(now);
+      const dayEnd = endOfDay(now);
+      const todayExpenses = expensesData.filter(e => {
+        const date = new Date(e.date || e.createdAt);
+        return date >= dayStart && date <= dayEnd;
+      });
+      const dayTotal = todayExpenses.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
+      setTodayTotal(dayTotal);
+    } catch (error) {
+      console.error('Error loading data:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    
+    // Try to scan for new SMS expenses on Android
+    if (smsStatus?.supported && smsStatus?.permissionGranted) {
+      try {
+        const result = await scanForNewExpenses();
+        if (result.newExpenses.length > 0) {
+          Alert.alert(
+            'SMS Sync Complete',
+            `Found ${result.newExpenses.length} new expense(s) from your messages!`
+          );
+        }
+      } catch (error) {
+        console.error('SMS scan error:', error);
+      }
+    }
+
+    await loadData();
+    setRefreshing(false);
+  }, [loadData, smsStatus]);
+
+  const handleExpenseAdded = (expense) => {
+    loadData();
+  };
+
+  const handleDeleteExpense = (expense) => {
+    Alert.alert(
+      'Delete Expense',
+      `Are you sure you want to delete this ₹${expense.amount} expense?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            await deleteExpense(expense.id);
+            loadData();
+          },
+        },
+      ]
+    );
+  };
+
+  const formatCurrency = (amount) => {
+    return amount.toLocaleString('en-IN', {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    });
+  };
+
+  const budgetPercentage = settings.monthlyBudget > 0 
+    ? Math.min((monthlyTotal / settings.monthlyBudget) * 100, 100)
+    : 0;
+
+  const budgetStatus = budgetPercentage >= 90 
+    ? { color: colors.danger, text: 'Over budget!' }
+    : budgetPercentage >= 70 
+      ? { color: colors.warning, text: 'Getting close' }
+      : { color: colors.success, text: 'On track' };
+
+  const renderHeader = () => (
+    <View style={styles.headerContent}>
+      {/* Greeting */}
+      <View style={styles.greeting}>
+        <Text style={styles.greetingText}>
+          {format(new Date(), 'EEEE, MMMM d')}
+        </Text>
+        <Text style={styles.title}>Xpentrik</Text>
+      </View>
+
+      {/* Main Stats Card */}
+      <LinearGradient
+        colors={['#1a1a2e', '#16213e']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.mainCard}
+      >
+        <View style={styles.mainCardHeader}>
+          <Text style={styles.mainCardLabel}>This Month</Text>
+          <View style={[styles.statusBadge, { backgroundColor: `${budgetStatus.color}20` }]}>
+            <Text style={[styles.statusText, { color: budgetStatus.color }]}>
+              {budgetStatus.text}
+            </Text>
+          </View>
+        </View>
+        
+        <View style={styles.mainAmountRow}>
+          <Text style={styles.mainCurrency}>₹</Text>
+          <Text style={styles.mainAmount}>{formatCurrency(monthlyTotal)}</Text>
+        </View>
+
+        {/* Budget Progress */}
+        <View style={styles.progressContainer}>
+          <View style={styles.progressBar}>
+            <View 
+              style={[
+                styles.progressFill, 
+                { 
+                  width: `${budgetPercentage}%`,
+                  backgroundColor: budgetStatus.color,
+                }
+              ]} 
+            />
+          </View>
+          <Text style={styles.progressText}>
+            {budgetPercentage.toFixed(0)}% of ₹{formatCurrency(settings.monthlyBudget)} budget
+          </Text>
+        </View>
+      </LinearGradient>
+
+      {/* Quick Stats Row */}
+      <View style={styles.statsRow}>
+        <StatCard
+          title="Today"
+          value={`₹${formatCurrency(todayTotal)}`}
+          icon="📅"
+          style={styles.statCard}
+        />
+        <StatCard
+          title="Transactions"
+          value={expenses.length.toString()}
+          icon="📊"
+          style={styles.statCard}
+        />
+      </View>
+
+      {/* SMS Status Banner */}
+      {smsStatus && !smsStatus.permissionGranted && smsStatus.supported && (
+        <TouchableOpacity style={styles.smsBanner} onPress={onRefresh}>
+          <Text style={styles.smsBannerIcon}>📱</Text>
+          <View style={styles.smsBannerContent}>
+            <Text style={styles.smsBannerTitle}>Enable Auto-Read</Text>
+            <Text style={styles.smsBannerText}>
+              Tap to allow SMS reading for automatic expense tracking
+            </Text>
+          </View>
+        </TouchableOpacity>
+      )}
+
+      {/* Recent Expenses Header */}
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionTitle}>Recent Expenses</Text>
+        <TouchableOpacity>
+          <Text style={styles.seeAllText}>See All</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+
+  const renderEmpty = () => (
+    <View style={styles.emptyContainer}>
+      <Text style={styles.emptyIcon}>💸</Text>
+      <Text style={styles.emptyTitle}>No expenses yet</Text>
+      <Text style={styles.emptyText}>
+        Tap the + button to add your first expense{'\n'}or pull down to sync from SMS
+      </Text>
+    </View>
+  );
+
+  return (
+    <View style={[styles.container, { paddingTop: insets.top }]}>
+      <StatusBar barStyle="light-content" backgroundColor={colors.background} />
+      
+      <FlatList
+        data={expenses.slice(0, 20)}
+        keyExtractor={(item) => item.id}
+        renderItem={({ item }) => (
+          <ExpenseCard
+            expense={item}
+            onLongPress={() => handleDeleteExpense(item)}
+          />
+        )}
+        ListHeaderComponent={renderHeader}
+        ListEmptyComponent={renderEmpty}
+        contentContainerStyle={styles.listContent}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={colors.primary}
+            colors={[colors.primary]}
+          />
+        }
+      />
+
+      {/* FAB */}
+      <TouchableOpacity
+        style={[styles.fab, { bottom: insets.bottom + 20 }]}
+        onPress={() => setModalVisible(true)}
+        activeOpacity={0.8}
+      >
+        <LinearGradient
+          colors={colors.gradients.primary}
+          style={styles.fabGradient}
+        >
+          <Text style={styles.fabText}>+</Text>
+        </LinearGradient>
+      </TouchableOpacity>
+
+      {/* Add Expense Modal */}
+      <AddExpenseModal
+        visible={modalVisible}
+        onClose={() => setModalVisible(false)}
+        onExpenseAdded={handleExpenseAdded}
+      />
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  listContent: {
+    paddingBottom: 100,
+  },
+  headerContent: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+  },
+  greeting: {
+    marginBottom: 20,
+  },
+  greetingText: {
+    fontSize: 14,
+    color: colors.textMuted,
+    marginBottom: 4,
+  },
+  title: {
+    fontSize: 32,
+    fontWeight: '800',
+    color: colors.text,
+    letterSpacing: -1,
+  },
+  mainCard: {
+    borderRadius: 24,
+    padding: 24,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  mainCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  mainCardLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  statusBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  statusText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  mainAmountRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 20,
+  },
+  mainCurrency: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: colors.primary,
+    marginRight: 4,
+    marginTop: 8,
+  },
+  mainAmount: {
+    fontSize: 48,
+    fontWeight: '800',
+    color: colors.text,
+    letterSpacing: -2,
+  },
+  progressContainer: {
+    marginTop: 4,
+  },
+  progressBar: {
+    height: 8,
+    backgroundColor: colors.surface,
+    borderRadius: 4,
+    overflow: 'hidden',
+    marginBottom: 8,
+  },
+  progressFill: {
+    height: '100%',
+    borderRadius: 4,
+  },
+  progressText: {
+    fontSize: 13,
+    color: colors.textMuted,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 24,
+  },
+  statCard: {
+    flex: 1,
+  },
+  smsBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.primaryMuted,
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 24,
+    borderWidth: 1,
+    borderColor: colors.primary,
+  },
+  smsBannerIcon: {
+    fontSize: 28,
+    marginRight: 14,
+  },
+  smsBannerContent: {
+    flex: 1,
+  },
+  smsBannerTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.primary,
+    marginBottom: 2,
+  },
+  smsBannerText: {
+    fontSize: 13,
+    color: colors.textSecondary,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  seeAllText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.primary,
+  },
+  emptyContainer: {
+    alignItems: 'center',
+    paddingVertical: 60,
+    paddingHorizontal: 40,
+  },
+  emptyIcon: {
+    fontSize: 64,
+    marginBottom: 16,
+  },
+  emptyTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: 8,
+  },
+  emptyText: {
+    fontSize: 15,
+    color: colors.textMuted,
+    textAlign: 'center',
+    lineHeight: 22,
+  },
+  fab: {
+    position: 'absolute',
+    right: 20,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    shadowColor: colors.primary,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.4,
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  fabGradient: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  fabText: {
+    fontSize: 32,
+    fontWeight: '300',
+    color: colors.text,
+    marginTop: -2,
+  },
+});
+
+export default HomeScreen;
+
