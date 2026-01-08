@@ -95,23 +95,29 @@ const HomeScreen = () => {
       setSettings(settingsData);
       setSmsStatus(smsStatusData);
 
-      // Calculate monthly total
+      // Calculate monthly total (only expenses, not income)
       const now = new Date();
       const monthStart = startOfMonth(now);
       const monthEnd = endOfMonth(now);
       const monthExpenses = expensesData.filter(e => {
         const date = new Date(e.date || e.createdAt);
-        return date >= monthStart && date <= monthEnd;
+        const isInMonth = date >= monthStart && date <= monthEnd;
+        // Only count expenses, not income
+        const isExpense = !e.isIncome;
+        return isInMonth && isExpense;
       });
       const monthTotal = monthExpenses.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
       setMonthlyTotal(monthTotal);
 
-      // Calculate today's total
+      // Calculate today's total (only expenses, not income)
       const dayStart = startOfDay(now);
       const dayEnd = endOfDay(now);
       const todayExpenses = expensesData.filter(e => {
         const date = new Date(e.date || e.createdAt);
-        return date >= dayStart && date <= dayEnd;
+        const isToday = date >= dayStart && date <= dayEnd;
+        // Only count expenses, not income
+        const isExpense = !e.isIncome;
+        return isToday && isExpense;
       });
       const dayTotal = todayExpenses.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
       setTodayTotal(dayTotal);

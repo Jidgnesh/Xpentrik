@@ -47,9 +47,12 @@ const AnalyticsScreen = () => {
         return date >= startDate && date <= endDate;
       });
 
-      // Calculate category totals
+      // Filter out income from expense calculations
+      const expensesOnly = filtered.filter(e => !e.isIncome);
+
+      // Calculate category totals (only expenses, not income)
       const categoryTotals = {};
-      filtered.forEach(e => {
+      expensesOnly.forEach(e => {
         const cat = e.category || 'other';
         categoryTotals[cat] = (categoryTotals[cat] || 0) + (parseFloat(e.amount) || 0);
       });
@@ -77,7 +80,10 @@ const AnalyticsScreen = () => {
       const dailyTotals = days.map(day => {
         const dayExpenses = data.filter(e => {
           const expenseDate = new Date(e.date || e.createdAt);
-          return isSameDay(expenseDate, day);
+          const isToday = isSameDay(expenseDate, day);
+          // Only count expenses, not income
+          const isExpense = !e.isIncome;
+          return isToday && isExpense;
         });
         const total = dayExpenses.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
         return {

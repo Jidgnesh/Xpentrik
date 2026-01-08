@@ -462,6 +462,55 @@ public class SmsPackage implements ReactPackage {
     },
   ]);
 
+  // Register SmsPackage in MainApplication.kt
+  config = withDangerousMod(config, [
+    'android',
+    async (config) => {
+      const projectRoot = config.modRequest.projectRoot;
+      const mainApplicationPath = path.join(
+        projectRoot,
+        'android/app/src/main/java/com/personal/xpentrik/MainApplication.kt'
+      );
+
+      if (fs.existsSync(mainApplicationPath)) {
+        let mainApplicationCode = fs.readFileSync(mainApplicationPath, 'utf8');
+
+        // Check if SmsPackage is already imported
+        if (!mainApplicationCode.includes('import com.personal.xpentrik.SmsPackage')) {
+          // Add import after other imports
+          const importPattern = /(import expo\.modules\.ReactNativeHostWrapper)/;
+          mainApplicationCode = mainApplicationCode.replace(
+            importPattern,
+            `$1\nimport com.personal.xpentrik.SmsPackage`
+          );
+        }
+
+        // Check if SmsPackage is already added to packages
+        if (!mainApplicationCode.includes('add(SmsPackage())')) {
+          // Add SmsPackage to the packages list
+          const packagesPattern = /(PackageList\(this\)\.packages\.apply \{[^}]*)(\/\/ Packages that cannot be autolinked)/;
+          if (packagesPattern.test(mainApplicationCode)) {
+            mainApplicationCode = mainApplicationCode.replace(
+              packagesPattern,
+              `$1\n              add(SmsPackage())\n              $2`
+            );
+          } else {
+            // Fallback: add after PackageList line
+            const packageListPattern = /(PackageList\(this\)\.packages\.apply \{)/;
+            mainApplicationCode = mainApplicationCode.replace(
+              packageListPattern,
+              `$1\n              add(SmsPackage())`
+            );
+          }
+        }
+
+        fs.writeFileSync(mainApplicationPath, mainApplicationCode);
+      }
+
+      return config;
+    },
+  ]);
+
   return config;
 };
 

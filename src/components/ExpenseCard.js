@@ -45,7 +45,12 @@ const ExpenseCard = ({ expense, onPress, onLongPress, style }) => {
         {/* Amount */}
         <View style={styles.amountContainer}>
           <Text style={styles.currency}>₹</Text>
-          <Text style={styles.amount}>{formattedAmount}</Text>
+          <Text style={[
+            styles.amount,
+            expense.isIncome && styles.incomeAmount
+          ]}>
+            {expense.isIncome ? `+${formattedAmount}` : formattedAmount}
+          </Text>
         </View>
       </View>
 
@@ -130,6 +135,9 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '700',
     color: colors.text,
+  },
+  incomeAmount: {
+    color: '#00E676', // Green for income
   },
   accentLine: {
     position: 'absolute',
