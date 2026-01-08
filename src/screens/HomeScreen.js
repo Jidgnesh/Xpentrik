@@ -17,7 +17,7 @@ import ExpenseCard from '../components/ExpenseCard';
 import StatCard from '../components/StatCard';
 import AddExpenseModal from '../components/AddExpenseModal';
 import { getExpenses, deleteExpense, getSettings, DEFAULT_CATEGORIES } from '../utils/storage';
-import { getSMSStatus, scanForNewExpenses, startSmsListener, stopSmsListener, requestSMSPermission } from '../services/smsService';
+import { getSMSStatus, scanForNewExpenses, startSmsListener, stopSmsListener, requestSMSPermission, processPendingSms, syncWeekSms } from '../services/smsService';
 
 const HomeScreen = () => {
   const insets = useSafeAreaInsets();
@@ -28,28 +28,48 @@ const HomeScreen = () => {
   const [refreshing, setRefreshing] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [smsStatus, setSmsStatus] = useState(null);
+  const [smsListenerId, setSmsListenerId] = useState(null);
+  const [syncing, setSyncing] = useState(false);
 
   // Handle new expense from SMS listener
   const handleNewSmsExpense = useCallback((expense) => {
+    const typeEmoji = expense.isIncome ? '💰' : '💸';
+    const typeText = expense.isIncome ? 'Income Received!' : 'Expense Detected!';
     Alert.alert(
-      '💸 New Expense Detected!',
+      `${typeEmoji} ${typeText}`,
       `₹${expense.amount} - ${expense.description}`,
       [{ text: 'OK' }]
     );
     loadData();
   }, []);
 
-  // Start SMS listener on mount
+  // Process pending SMS and start listener on mount
   useEffect(() => {
     const initSmsListener = async () => {
       const status = await getSMSStatus();
+      setSmsStatus(status);
+
       if (status.supported && status.permissionGranted) {
-        startSmsListener(handleNewSmsExpense);
+        // Process any SMS received while app was closed
+        const { newExpenses } = await processPendingSms();
+        if (newExpenses.length > 0) {
+          Alert.alert(
+            '📱 SMS Synced!',
+            `Found ${newExpenses.length} new transaction(s) from SMS received while app was closed.`,
+            [{ text: 'OK' }]
+          );
+          loadData();
+        }
+
+        // Start listening for new SMS
+        const listenerId = await startSmsListener(handleNewSmsExpense);
+        setSmsListenerId(listenerId);
       } else if (status.supported && !status.permissionGranted) {
         // Request permission on first launch
         const granted = await requestSMSPermission();
         if (granted) {
-          startSmsListener(handleNewSmsExpense);
+          const listenerId = await startSmsListener(handleNewSmsExpense);
+          setSmsListenerId(listenerId);
         }
       }
     };
@@ -57,7 +77,9 @@ const HomeScreen = () => {
     initSmsListener();
 
     return () => {
-      stopSmsListener();
+      if (smsListenerId) {
+        stopSmsListener(smsListenerId);
+      }
     };
   }, [handleNewSmsExpense]);
 
@@ -144,6 +166,47 @@ const HomeScreen = () => {
         },
       ]
     );
+  };
+
+  // Sync week's SMS messages
+  const handleSyncWeek = async () => {
+    if (syncing) return;
+    
+    setSyncing(true);
+    try {
+      const result = await syncWeekSms(7);
+      
+      if (result.success) {
+        if (result.newExpenses.length > 0) {
+          Alert.alert(
+            '✅ Sync Complete!',
+            `Found ${result.newExpenses.length} new transaction(s) from the last 7 days.\n\nTotal scanned: ${result.totalScanned}\nAlready processed: ${result.alreadyProcessed}`,
+            [{ text: 'OK' }]
+          );
+          loadData();
+        } else {
+          Alert.alert(
+            '📱 Sync Complete',
+            result.message || `Scanned ${result.totalScanned} messages. No new transactions found.`,
+            [{ text: 'OK' }]
+          );
+        }
+      } else {
+        Alert.alert(
+          '⚠️ Sync Failed',
+          result.error || 'Unable to sync SMS. Please check permissions.',
+          [{ text: 'OK' }]
+        );
+      }
+    } catch (error) {
+      Alert.alert(
+        'Error',
+        error.message || 'Failed to sync SMS messages.',
+        [{ text: 'OK' }]
+      );
+    } finally {
+      setSyncing(false);
+    }
   };
 
   const formatCurrency = (amount) => {
@@ -237,6 +300,25 @@ const HomeScreen = () => {
             <Text style={styles.smsBannerTitle}>Enable Auto-Read</Text>
             <Text style={styles.smsBannerText}>
               Tap to allow SMS reading for automatic expense tracking
+            </Text>
+          </View>
+        </TouchableOpacity>
+      )}
+
+      {/* Sync Week Button - Shows when SMS is available */}
+      {smsStatus?.supported && smsStatus?.permissionGranted && (
+        <TouchableOpacity 
+          style={[styles.syncWeekButton, syncing && styles.syncWeekButtonDisabled]} 
+          onPress={handleSyncWeek}
+          disabled={syncing}
+        >
+          <Text style={styles.syncWeekIcon}>{syncing ? '⏳' : '🔄'}</Text>
+          <View style={styles.syncWeekContent}>
+            <Text style={styles.syncWeekTitle}>
+              {syncing ? 'Syncing...' : 'Sync Last 7 Days'}
+            </Text>
+            <Text style={styles.syncWeekText}>
+              Scan SMS inbox for missed transactions
             </Text>
           </View>
         </TouchableOpacity>
@@ -436,6 +518,37 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   smsBannerText: {
+    fontSize: 13,
+    color: colors.textSecondary,
+  },
+  syncWeekButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 24,
+    borderWidth: 1,
+    borderColor: colors.success,
+  },
+  syncWeekButtonDisabled: {
+    opacity: 0.6,
+    borderColor: colors.border,
+  },
+  syncWeekIcon: {
+    fontSize: 28,
+    marginRight: 14,
+  },
+  syncWeekContent: {
+    flex: 1,
+  },
+  syncWeekTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.success,
+    marginBottom: 2,
+  },
+  syncWeekText: {
     fontSize: 13,
     color: colors.textSecondary,
   },

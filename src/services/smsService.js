@@ -1,12 +1,8 @@
-import { NativeModules, NativeEventEmitter, Platform, PermissionsAndroid } from 'react-native';
+import { Platform, PermissionsAndroid, NativeModules } from 'react-native';
 import { parseSMS, smsToExpense, generateSMSId } from '../utils/smsParser';
 import { saveExpense, getProcessedSMSIds, markSMSAsProcessed } from '../utils/storage';
 
 const { SmsModule } = NativeModules;
-
-// Event emitter for real-time SMS
-let smsEventEmitter = null;
-let smsSubscription = null;
 
 /**
  * Check if native SMS module is available
@@ -29,10 +25,11 @@ export const requestSMSPermission = async () => {
       PermissionsAndroid.PERMISSIONS.RECEIVE_SMS,
     ]);
 
-    return (
+    const allGranted = 
       granted[PermissionsAndroid.PERMISSIONS.READ_SMS] === PermissionsAndroid.RESULTS.GRANTED &&
-      granted[PermissionsAndroid.PERMISSIONS.RECEIVE_SMS] === PermissionsAndroid.RESULTS.GRANTED
-    );
+      granted[PermissionsAndroid.PERMISSIONS.RECEIVE_SMS] === PermissionsAndroid.RESULTS.GRANTED;
+
+    return allGranted;
   } catch (err) {
     console.error('Permission error:', err);
     return false;
@@ -47,13 +44,25 @@ export const checkSMSPermission = async () => {
     return false;
   }
 
-  if (!isNativeModuleAvailable()) {
-    return false;
+  // Try native module first
+  if (isNativeModuleAvailable()) {
+    try {
+      const hasPermission = await SmsModule.checkPermission();
+      return hasPermission;
+    } catch (err) {
+      console.error('Native permission check error:', err);
+    }
   }
 
+  // Fallback to PermissionsAndroid
   try {
-    const hasPermission = await SmsModule.checkPermission();
-    return hasPermission;
+    const readGranted = await PermissionsAndroid.check(
+      PermissionsAndroid.PERMISSIONS.READ_SMS
+    );
+    const receiveGranted = await PermissionsAndroid.check(
+      PermissionsAndroid.PERMISSIONS.RECEIVE_SMS
+    );
+    return readGranted && receiveGranted;
   } catch (err) {
     console.error('Permission check error:', err);
     return false;
@@ -61,42 +70,225 @@ export const checkSMSPermission = async () => {
 };
 
 /**
- * Read transaction SMS messages from device
+ * Get pending SMS that were received while app was closed
+ * These are saved by the native BroadcastReceiver
  */
-export const readSMSMessages = async (options = {}) => {
-  const { maxCount = 100, minDate = null } = options;
-
+export const getPendingSms = async () => {
   if (!isNativeModuleAvailable()) {
-    console.log('SMS module not available');
     return [];
   }
 
-  const hasPermission = await checkSMSPermission();
-  if (!hasPermission) {
-    const granted = await requestSMSPermission();
-    if (!granted) {
-      throw new Error('SMS permission denied');
-    }
-  }
-
   try {
-    const minTimestamp = minDate ? new Date(minDate).getTime() : 0;
-    const messages = await SmsModule.getTransactionMessages(maxCount, minTimestamp);
-    
-    return messages.map(sms => ({
-      body: sms.body,
-      address: sms.address,
-      date: new Date(sms.date).toISOString(),
-      id: sms.id,
-    }));
+    const pendingSms = await SmsModule.getPendingSms();
+    return pendingSms || [];
   } catch (error) {
-    console.error('Error reading SMS:', error);
-    throw error;
+    console.error('Error getting pending SMS:', error);
+    return [];
   }
 };
 
 /**
- * Process SMS messages and extract expenses
+ * Clear pending SMS after processing
+ */
+export const clearPendingSms = async () => {
+  if (!isNativeModuleAvailable()) {
+    return;
+  }
+
+  try {
+    await SmsModule.clearPendingSms();
+  } catch (error) {
+    console.error('Error clearing pending SMS:', error);
+  }
+};
+
+/**
+ * Process pending SMS and create expenses
+ * Call this when app opens to process SMS received while app was closed
+ */
+export const processPendingSms = async () => {
+  const pendingSms = await getPendingSms();
+  
+  if (pendingSms.length === 0) {
+    return { processed: 0, newExpenses: [] };
+  }
+
+  console.log(`Processing ${pendingSms.length} pending SMS...`);
+  
+  const processedIds = await getProcessedSMSIds();
+  const newExpenses = [];
+
+  for (const sms of pendingSms) {
+    const smsId = generateSMSId(sms.body, new Date(sms.timestamp).toISOString());
+
+    if (processedIds.includes(smsId)) {
+      continue;
+    }
+
+    const parsed = parseSMS(sms.body, sms.sender, new Date(sms.timestamp).toISOString());
+    const expense = smsToExpense(parsed);
+
+    if (expense) {
+      try {
+        const saved = await saveExpense(expense);
+        await markSMSAsProcessed(smsId);
+        newExpenses.push(saved);
+        console.log('Expense created from pending SMS:', saved.amount);
+      } catch (error) {
+        console.error('Error saving expense:', error);
+      }
+    } else {
+      await markSMSAsProcessed(smsId);
+    }
+  }
+
+  // Clear pending SMS after processing
+  await clearPendingSms();
+
+  return { processed: pendingSms.length, newExpenses };
+};
+
+/**
+ * Start SMS listener (for when app is open)
+ */
+export const startSmsListener = async (onNewExpense) => {
+  // Process any pending SMS first
+  const { newExpenses } = await processPendingSms();
+  
+  if (newExpenses.length > 0 && onNewExpense) {
+    newExpenses.forEach(expense => onNewExpense(expense));
+  }
+
+  // Set up interval to check for new pending SMS
+  const intervalId = setInterval(async () => {
+    const { newExpenses: newOnes } = await processPendingSms();
+    if (newOnes.length > 0 && onNewExpense) {
+      newOnes.forEach(expense => onNewExpense(expense));
+    }
+  }, 5000); // Check every 5 seconds
+
+  return intervalId;
+};
+
+/**
+ * Stop SMS listener
+ */
+export const stopSmsListener = (intervalId) => {
+  if (intervalId) {
+    clearInterval(intervalId);
+  }
+};
+
+/**
+ * Scan for new expenses (manual trigger)
+ */
+export const scanForNewExpenses = async () => {
+  const { processed, newExpenses } = await processPendingSms();
+  
+  return {
+    success: true,
+    newExpenses,
+    totalScanned: processed,
+  };
+};
+
+/**
+ * Sync week's SMS - scan last 7 days of messages and process any missed transactions
+ */
+export const syncWeekSms = async (days = 7) => {
+  if (!isNativeModuleAvailable()) {
+    return {
+      success: false,
+      error: 'Native SMS module not available. Please use the APK build.',
+      newExpenses: [],
+      totalScanned: 0,
+      alreadyProcessed: 0,
+    };
+  }
+
+  const hasPermission = await checkSMSPermission();
+  if (!hasPermission) {
+    return {
+      success: false,
+      error: 'SMS permission not granted. Please enable SMS permission.',
+      newExpenses: [],
+      totalScanned: 0,
+      alreadyProcessed: 0,
+    };
+  }
+
+  try {
+    console.log(`Syncing last ${days} days of SMS...`);
+    
+    // Get transaction SMS from native module
+    const messages = await SmsModule.getTransactionSms(days);
+    
+    if (!messages || messages.length === 0) {
+      return {
+        success: true,
+        newExpenses: [],
+        totalScanned: 0,
+        alreadyProcessed: 0,
+        message: 'No transaction messages found in the last week.',
+      };
+    }
+
+    console.log(`Found ${messages.length} transaction SMS`);
+    
+    const processedIds = await getProcessedSMSIds();
+    const newExpenses = [];
+    let alreadyProcessed = 0;
+
+    for (const sms of messages) {
+      const timestamp = new Date(sms.timestamp).toISOString();
+      const smsId = generateSMSId(sms.body, timestamp);
+
+      if (processedIds.includes(smsId)) {
+        alreadyProcessed++;
+        continue;
+      }
+
+      const parsed = parseSMS(sms.body, sms.sender, timestamp);
+      const expense = smsToExpense(parsed);
+
+      if (expense) {
+        try {
+          const saved = await saveExpense(expense);
+          await markSMSAsProcessed(smsId);
+          newExpenses.push(saved);
+          console.log('Expense synced:', saved.amount, saved.merchant);
+        } catch (error) {
+          console.error('Error saving synced expense:', error);
+        }
+      } else {
+        // Mark as processed even if not a valid expense to avoid re-processing
+        await markSMSAsProcessed(smsId);
+      }
+    }
+
+    return {
+      success: true,
+      newExpenses,
+      totalScanned: messages.length,
+      alreadyProcessed,
+      message: newExpenses.length > 0 
+        ? `Synced ${newExpenses.length} new transactions!`
+        : `All ${messages.length} messages already processed.`,
+    };
+  } catch (error) {
+    console.error('Error syncing week SMS:', error);
+    return {
+      success: false,
+      error: error.message || 'Failed to sync SMS',
+      newExpenses: [],
+      totalScanned: 0,
+      alreadyProcessed: 0,
+    };
+  }
+};
+
+/**
+ * Process SMS messages
  */
 export const processSMSMessages = async (messages) => {
   const processedIds = await getProcessedSMSIds();
@@ -126,113 +318,6 @@ export const processSMSMessages = async (messages) => {
   }
 
   return newExpenses;
-};
-
-/**
- * Scan for new transaction SMS and create expenses
- */
-export const scanForNewExpenses = async () => {
-  if (!isNativeModuleAvailable()) {
-    return {
-      success: false,
-      error: 'SMS module not available. Please use development build.',
-      newExpenses: [],
-      totalScanned: 0,
-    };
-  }
-
-  try {
-    const sevenDaysAgo = new Date();
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-
-    const messages = await readSMSMessages({
-      maxCount: 200,
-      minDate: sevenDaysAgo.toISOString(),
-    });
-
-    const newExpenses = await processSMSMessages(messages);
-
-    return {
-      success: true,
-      newExpenses,
-      totalScanned: messages.length,
-    };
-  } catch (error) {
-    console.error('Error scanning for expenses:', error);
-    return {
-      success: false,
-      error: error.message,
-      newExpenses: [],
-      totalScanned: 0,
-    };
-  }
-};
-
-/**
- * Start listening for real-time SMS
- */
-export const startSmsListener = (onNewExpense) => {
-  if (!isNativeModuleAvailable()) {
-    console.log('SMS listener not available in Expo Go');
-    return null;
-  }
-
-  try {
-    if (!smsEventEmitter) {
-      smsEventEmitter = new NativeEventEmitter(SmsModule);
-    }
-
-    // Remove existing subscription
-    if (smsSubscription) {
-      smsSubscription.remove();
-    }
-
-    smsSubscription = smsEventEmitter.addListener('onSmsReceived', async (event) => {
-      console.log('SMS received:', event.sender);
-      
-      const smsId = generateSMSId(event.body, new Date(event.timestamp).toISOString());
-      const processedIds = await getProcessedSMSIds();
-
-      if (processedIds.includes(smsId)) {
-        console.log('SMS already processed');
-        return;
-      }
-
-      const parsed = parseSMS(event.body, event.sender, new Date(event.timestamp).toISOString());
-      const expense = smsToExpense(parsed);
-
-      if (expense) {
-        try {
-          const saved = await saveExpense(expense);
-          await markSMSAsProcessed(smsId);
-          console.log('Expense saved from SMS:', saved.amount);
-          
-          if (onNewExpense) {
-            onNewExpense(saved);
-          }
-        } catch (error) {
-          console.error('Error saving expense:', error);
-        }
-      }
-    });
-
-    console.log('SMS listener started');
-    return smsSubscription;
-  } catch (error) {
-    console.error('Error starting SMS listener:', error);
-    return null;
-  }
-};
-
-/**
- * Stop listening for SMS
- */
-export const stopSmsListener = () => {
-  if (smsSubscription) {
-    smsSubscription.remove();
-    smsSubscription = null;
-    console.log('SMS listener stopped');
-  }
 };
 
 /**
@@ -272,17 +357,17 @@ export const processManualSMS = async (messageText, sender = 'MANUAL') => {
 export const getSMSStatus = async () => {
   const isAndroid = Platform.OS === 'android';
   const hasNativeModule = isNativeModuleAvailable();
-  const hasPermission = hasNativeModule ? await checkSMSPermission() : false;
+  const hasPermission = isAndroid ? await checkSMSPermission() : false;
 
   let message = '';
   if (!isAndroid) {
     message = 'SMS auto-read is only available on Android.';
   } else if (!hasNativeModule) {
-    message = 'Running in Expo Go. Build APK for auto SMS reading.';
+    message = 'Install the APK build to enable SMS auto-read.';
   } else if (!hasPermission) {
     message = 'Tap to enable SMS permission for automatic tracking.';
   } else {
-    message = '✅ SMS auto-read enabled! Expenses are tracked automatically.';
+    message = '✅ SMS auto-read active! Bank SMS will be tracked even when app is closed.';
   }
 
   return {

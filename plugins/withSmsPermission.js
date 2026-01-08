@@ -1,4 +1,5 @@
-const { withAndroidManifest, withMainActivity } = require('@expo/config-plugins');
+const { withAndroidManifest, withMainApplication, withProjectBuildGradle } = require('@expo/config-plugins');
+const { mergeContents } = require('@expo/config-plugins/build/utils/generateCode');
 
 const withSmsPermission = (config) => {
   // Add SMS permissions to AndroidManifest.xml
@@ -13,7 +14,7 @@ const withSmsPermission = (config) => {
     const permissions = [
       'android.permission.READ_SMS',
       'android.permission.RECEIVE_SMS',
-      'android.permission.FOREGROUND_SERVICE',
+      'android.permission.READ_PHONE_STATE',
     ];
 
     permissions.forEach((permission) => {
@@ -27,31 +28,6 @@ const withSmsPermission = (config) => {
       }
     });
 
-    // Add SMS receiver
-    const application = manifest.application[0];
-    if (!application.receiver) {
-      application.receiver = [];
-    }
-
-    const receiverExists = application.receiver.some(
-      (r) => r.$['android:name'] === '.SmsReceiver'
-    );
-
-    if (!receiverExists) {
-      application.receiver.push({
-        $: {
-          'android:name': '.SmsReceiver',
-          'android:exported': 'true',
-          'android:permission': 'android.permission.BROADCAST_SMS',
-        },
-        'intent-filter': [
-          {
-            action: [{ $: { 'android:name': 'android.provider.Telephony.SMS_RECEIVED' } }],
-          },
-        ],
-      });
-    }
-
     return config;
   });
 
@@ -59,4 +35,3 @@ const withSmsPermission = (config) => {
 };
 
 module.exports = withSmsPermission;
-

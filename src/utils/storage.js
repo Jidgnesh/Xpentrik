@@ -7,6 +7,7 @@ const PROCESSED_SMS_KEY = '@xpentrik_processed_sms';
 
 // Default categories with icons and colors
 export const DEFAULT_CATEGORIES = [
+  { id: 'income', name: 'Income', icon: '💰', color: '#00E676' },
   { id: 'food', name: 'Food & Dining', icon: '🍕', color: '#FF6B35' },
   { id: 'transport', name: 'Transport', icon: '🚗', color: '#4ECDC4' },
   { id: 'shopping', name: 'Shopping', icon: '🛍️', color: '#9B59B6' },
