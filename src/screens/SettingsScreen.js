@@ -36,6 +36,8 @@ const SettingsScreen = () => {
   const [expenseCount, setExpenseCount] = useState(0);
   const [budgetInput, setBudgetInput] = useState('');
   const [isScanning, setIsScanning] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [isBackingUp, setIsBackingUp] = useState(false);
   const [notificationSettings, setNotificationSettings] = useState({ dailyReminder: { enabled: false } });
   const [reminderTime, setReminderTime] = useState('20:00');
 

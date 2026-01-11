@@ -55,13 +55,14 @@ const SplitExpenseModal = ({ visible, onClose, expense, onSplitAdded }) => {
   };
 
   const calculateEqualSplit = () => {
-    const total = expense.amount;
-    const perPerson = total / people.length;
+    if (!expense || !expense.amount) return [];
+    const total = expense.amount || 0;
+    const perPerson = total / Math.max(1, people.length);
     return people.map(p => ({ ...p, amount: perPerson.toFixed(2) }));
   };
 
   const handleSave = async () => {
-    if (!expense) return;
+    if (!expense || !expense.id) return;
 
     // Validate
     if (people.some(p => !p.name.trim())) {
@@ -71,6 +72,10 @@ const SplitExpenseModal = ({ visible, onClose, expense, onSplitAdded }) => {
 
     if (splitType === 'equal') {
       const splits = calculateEqualSplit();
+      if (splits.length === 0) {
+        Alert.alert('Error', 'Invalid expense amount');
+        return;
+      }
       try {
         await splitExpense(expense.id, splits);
         Alert.alert('Success', 'Expense split saved!');
@@ -82,8 +87,9 @@ const SplitExpenseModal = ({ visible, onClose, expense, onSplitAdded }) => {
     } else {
       // Custom split - validate amounts
       const total = people.reduce((sum, p) => sum + parseFloat(p.amount || 0), 0);
-      if (Math.abs(total - expense.amount) > 0.01) {
-        Alert.alert('Error', `Amounts must total ₹${expense.amount}`);
+      const expenseAmount = expense.amount || 0;
+      if (Math.abs(total - expenseAmount) > 0.01) {
+        Alert.alert('Error', `Amounts must total ₹${expenseAmount}`);
         return;
       }
 
@@ -144,8 +150,8 @@ const SplitExpenseModal = ({ visible, onClose, expense, onSplitAdded }) => {
           </View>
 
           <View style={styles.expenseInfo}>
-            <Text style={styles.expenseDescription}>{expense.description}</Text>
-            <Text style={styles.expenseAmount}>₹{expense.amount.toLocaleString('en-IN')}</Text>
+            <Text style={styles.expenseDescription}>{expense.description || 'Expense'}</Text>
+            <Text style={styles.expenseAmount}>₹{(expense.amount || 0).toLocaleString('en-IN')}</Text>
           </View>
 
           <ScrollView style={styles.content}>
@@ -193,7 +199,7 @@ const SplitExpenseModal = ({ visible, onClose, expense, onSplitAdded }) => {
                   )}
                   {splitType === 'equal' && (
                     <Text style={styles.equalAmount}>
-                      ₹{(expense.amount / people.length).toFixed(2)}
+                      ₹{((expense.amount || 0) / Math.max(1, people.length)).toFixed(2)}
                     </Text>
                   )}
                 </View>

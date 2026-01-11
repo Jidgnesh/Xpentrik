@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getExpenses } from './storage';
 
 const SPLIT_EXPENSES_KEY = '@xpentrik_split_expenses';
 const SPLIT_GROUPS_KEY = '@xpentrik_split_groups';
@@ -72,7 +73,6 @@ export const deleteSplit = async (expenseId) => {
 export const calculateSettlements = async () => {
   try {
     const splitExpenses = await getSplitExpenses();
-    const { getExpenses } = require('./storage');
     const expenses = await getExpenses();
     
     const balances = {};

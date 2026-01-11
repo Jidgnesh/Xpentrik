@@ -20,7 +20,6 @@ import ExpenseCard from '../components/ExpenseCard';
 import StatCard from '../components/StatCard';
 import AddExpenseModal from '../components/AddExpenseModal';
 import SplitExpenseModal from '../components/SplitExpenseModal';
-import { getExpenseSplit } from '../utils/splitting';
 import { getExpenses, deleteExpense, getSettings, DEFAULT_CATEGORIES } from '../utils/storage';
 import { getSMSStatus, scanForNewExpenses, startSmsListener, stopSmsListener, requestSMSPermission, processPendingSms, syncWeekSms } from '../services/smsService';
 import { sendBudgetAlert } from '../services/notifications';
@@ -47,15 +46,17 @@ const HomeScreen = () => {
     minAmount: '',
     maxAmount: '',
   });
+  const [sortBy, setSortBy] = useState('latest'); // 'latest', 'oldest', 'highest', 'lowest'
   const [filteredExpenses, setFilteredExpenses] = useState([]);
 
   // Handle new expense from SMS listener
   const handleNewSmsExpense = useCallback((expense) => {
+    if (!expense) return;
     const typeEmoji = expense.isIncome ? '💰' : '💸';
     const typeText = expense.isIncome ? 'Income Received!' : 'Expense Detected!';
     Alert.alert(
       `${typeEmoji} ${typeText}`,
-      `₹${expense.amount} - ${expense.description}`,
+      `₹${expense.amount || 0} - ${expense.description || 'Transaction'}`,
       [{ text: 'OK' }]
     );
     loadData();
@@ -115,7 +116,7 @@ const HomeScreen = () => {
       filtered = filtered.filter(e => 
         (e.description || '').toLowerCase().includes(query) ||
         (e.merchant || '').toLowerCase().includes(query) ||
-        e.amount.toString().includes(query) ||
+        (e.amount || 0).toString().includes(query) ||
         (e.category || '').toLowerCase().includes(query)
       );
     }
@@ -129,13 +130,13 @@ const HomeScreen = () => {
     if (filters.minAmount) {
       const min = parseFloat(filters.minAmount);
       if (!isNaN(min)) {
-        filtered = filtered.filter(e => e.amount >= min);
+        filtered = filtered.filter(e => (e.amount || 0) >= min);
       }
     }
     if (filters.maxAmount) {
       const max = parseFloat(filters.maxAmount);
       if (!isNaN(max)) {
-        filtered = filtered.filter(e => e.amount <= max);
+        filtered = filtered.filter(e => (e.amount || 0) <= max);
       }
     }
 
@@ -165,8 +166,26 @@ const HomeScreen = () => {
       }
     }
 
+    // Sort the filtered results
+    filtered.sort((a, b) => {
+      if (sortBy === 'latest') {
+        const dateA = new Date(a.date || a.createdAt);
+        const dateB = new Date(b.date || b.createdAt);
+        return dateB - dateA; // Newest first
+      } else if (sortBy === 'oldest') {
+        const dateA = new Date(a.date || a.createdAt);
+        const dateB = new Date(b.date || b.createdAt);
+        return dateA - dateB; // Oldest first
+      } else if (sortBy === 'highest') {
+        return (parseFloat(b.amount) || 0) - (parseFloat(a.amount) || 0); // Highest first
+      } else if (sortBy === 'lowest') {
+        return (parseFloat(a.amount) || 0) - (parseFloat(b.amount) || 0); // Lowest first
+      }
+      return 0;
+    });
+
     setFilteredExpenses(filtered);
-  }, [searchQuery, filters]);
+  }, [searchQuery, filters, sortBy]);
 
   const loadData = useCallback(async () => {
     try {
@@ -247,14 +266,14 @@ const HomeScreen = () => {
     loadData();
   }, [loadData]);
 
-  // Re-apply filters when search or filters change
+  // Re-apply filters when search, filters, or sort changes
   useEffect(() => {
     if (expenses && expenses.length > 0) {
       applyFilters(expenses);
     } else if (expenses && expenses.length === 0) {
       setFilteredExpenses([]);
     }
-  }, [searchQuery, filters, expenses, applyFilters]);
+  }, [searchQuery, filters, sortBy, expenses, applyFilters]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -462,6 +481,34 @@ const HomeScreen = () => {
         </TouchableOpacity>
       )}
 
+      {/* Search and Filter Bar */}
+      <View style={styles.searchContainer}>
+        <View style={styles.searchBar}>
+          <Text style={styles.searchIcon}>🔍</Text>
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search expenses..."
+            placeholderTextColor={colors.textMuted}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+          />
+          {searchQuery.length > 0 && (
+            <TouchableOpacity onPress={() => setSearchQuery('')}>
+              <Text style={styles.clearIcon}>✕</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+        <TouchableOpacity
+          style={styles.filterButton}
+          onPress={() => setFilterModalVisible(true)}
+        >
+          <Text style={styles.filterIcon}>🔽</Text>
+          {(filters.category || filters.dateRange || filters.minAmount || filters.maxAmount || sortBy !== 'latest') && (
+            <View style={styles.filterBadge} />
+          )}
+        </TouchableOpacity>
+      </View>
+
       {/* Recent Expenses Header */}
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>Recent Expenses</Text>
@@ -545,6 +592,170 @@ const HomeScreen = () => {
         expense={splittingExpense}
         onSplitAdded={loadData}
       />
+
+      {/* Filter & Sort Modal */}
+      <Modal
+        visible={filterModalVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setFilterModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.filterModalContainer}>
+            <View style={styles.filterModalHeader}>
+              <Text style={styles.filterModalTitle}>Filter & Sort</Text>
+              <TouchableOpacity
+                onPress={() => setFilterModalVisible(false)}
+                style={styles.filterModalClose}
+              >
+                <Text style={styles.closeText}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={styles.filterModalContent} showsVerticalScrollIndicator={false}>
+              {/* Sort Section */}
+              <View style={styles.filterSection}>
+                <Text style={styles.filterLabel}>Sort By</Text>
+                <View style={styles.dateFilterGrid}>
+                  <TouchableOpacity
+                    style={[styles.dateFilterButton, sortBy === 'latest' && styles.dateFilterButtonActive]}
+                    onPress={() => setSortBy('latest')}
+                  >
+                    <Text style={[styles.dateFilterText, sortBy === 'latest' && styles.dateFilterTextActive]}>
+                      📅 Latest
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.dateFilterButton, sortBy === 'oldest' && styles.dateFilterButtonActive]}
+                    onPress={() => setSortBy('oldest')}
+                  >
+                    <Text style={[styles.dateFilterText, sortBy === 'oldest' && styles.dateFilterTextActive]}>
+                      📅 Oldest
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.dateFilterButton, sortBy === 'highest' && styles.dateFilterButtonActive]}
+                    onPress={() => setSortBy('highest')}
+                  >
+                    <Text style={[styles.dateFilterText, sortBy === 'highest' && styles.dateFilterTextActive]}>
+                      💰 Highest
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.dateFilterButton, sortBy === 'lowest' && styles.dateFilterButtonActive]}
+                    onPress={() => setSortBy('lowest')}
+                  >
+                    <Text style={[styles.dateFilterText, sortBy === 'lowest' && styles.dateFilterTextActive]}>
+                      💰 Lowest
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* Category Filter */}
+              <View style={styles.filterSection}>
+                <Text style={styles.filterLabel}>Category</Text>
+                <View style={styles.categoryFilterGrid}>
+                  <TouchableOpacity
+                    style={[styles.categoryFilterChip, filters.category === null && styles.categoryFilterChipActive]}
+                    onPress={() => setFilters({ ...filters, category: null })}
+                  >
+                    <Text style={styles.categoryFilterText}>All</Text>
+                  </TouchableOpacity>
+                  {DEFAULT_CATEGORIES.filter(c => c.id !== 'income').map((category) => (
+                    <TouchableOpacity
+                      key={category.id}
+                      style={[styles.categoryFilterChip, filters.category === category.id && styles.categoryFilterChipActive]}
+                      onPress={() => setFilters({ ...filters, category: category.id })}
+                    >
+                      <Text style={styles.categoryFilterText}>{category.name}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+
+              {/* Date Range Filter */}
+              <View style={styles.filterSection}>
+                <Text style={styles.filterLabel}>Date Range</Text>
+                <View style={styles.dateFilterGrid}>
+                  <TouchableOpacity
+                    style={[styles.dateFilterButton, filters.dateRange === null && styles.dateFilterButtonActive]}
+                    onPress={() => setFilters({ ...filters, dateRange: null })}
+                  >
+                    <Text style={[styles.dateFilterText, filters.dateRange === null && styles.dateFilterTextActive]}>
+                      All Time
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.dateFilterButton, filters.dateRange === 'today' && styles.dateFilterButtonActive]}
+                    onPress={() => setFilters({ ...filters, dateRange: 'today' })}
+                  >
+                    <Text style={[styles.dateFilterText, filters.dateRange === 'today' && styles.dateFilterTextActive]}>
+                      Today
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.dateFilterButton, filters.dateRange === 'week' && styles.dateFilterButtonActive]}
+                    onPress={() => setFilters({ ...filters, dateRange: 'week' })}
+                  >
+                    <Text style={[styles.dateFilterText, filters.dateRange === 'week' && styles.dateFilterTextActive]}>
+                      This Week
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.dateFilterButton, filters.dateRange === 'month' && styles.dateFilterButtonActive]}
+                    onPress={() => setFilters({ ...filters, dateRange: 'month' })}
+                  >
+                    <Text style={[styles.dateFilterText, filters.dateRange === 'month' && styles.dateFilterTextActive]}>
+                      This Month
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* Amount Filter */}
+              <View style={styles.filterSection}>
+                <Text style={styles.filterLabel}>Amount Range</Text>
+                <View style={styles.amountFilterRow}>
+                  <View style={styles.amountInputGroup}>
+                    <Text style={styles.amountLabel}>Min</Text>
+                    <TextInput
+                      style={styles.amountInput}
+                      placeholder="0"
+                      placeholderTextColor={colors.textMuted}
+                      value={filters.minAmount}
+                      onChangeText={(text) => setFilters({ ...filters, minAmount: text })}
+                      keyboardType="numeric"
+                    />
+                  </View>
+                  <View style={styles.amountInputGroup}>
+                    <Text style={styles.amountLabel}>Max</Text>
+                    <TextInput
+                      style={styles.amountInput}
+                      placeholder="∞"
+                      placeholderTextColor={colors.textMuted}
+                      value={filters.maxAmount}
+                      onChangeText={(text) => setFilters({ ...filters, maxAmount: text })}
+                      keyboardType="numeric"
+                    />
+                  </View>
+                </View>
+              </View>
+
+              {/* Clear Filters */}
+              <TouchableOpacity
+                style={styles.clearFiltersButton}
+                onPress={() => {
+                  setFilters({ category: null, dateRange: null, minAmount: '', maxAmount: '' });
+                  setSortBy('latest');
+                }}
+              >
+                <Text style={styles.clearFiltersText}>Clear All Filters</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 };

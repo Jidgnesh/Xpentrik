@@ -16,14 +16,20 @@ export const exportToCSV = async () => {
     
     // CSV Rows
     expenses.forEach(expense => {
-      const date = format(new Date(expense.date || expense.createdAt), 'yyyy-MM-dd HH:mm:ss');
-      const description = (expense.description || '').replace(/,/g, ';');
+      if (!expense) return;
+      const date = format(new Date(expense.date || expense.createdAt || new Date()), 'yyyy-MM-dd HH:mm:ss');
+      const description = (expense.description || '').replace(/,/g, ';').replace(/"/g, '""');
       const category = expense.category || 'other';
       const amount = expense.amount || 0;
       const type = expense.isIncome ? 'Income' : 'Expense';
       const source = expense.source || 'manual';
       
-      csv += `${date},${description},${category},${amount},${type},${source}\n`;
+      // Escape description if it contains commas or quotes
+      const escapedDescription = description.includes(',') || description.includes('"') 
+        ? `"${description}"` 
+        : description;
+      
+      csv += `${date},${escapedDescription},${category},${amount},${type},${source}\n`;
     });
     
     // Save to file

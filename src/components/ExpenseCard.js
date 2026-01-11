@@ -6,9 +6,11 @@ import { DEFAULT_CATEGORIES } from '../utils/storage';
 import { format } from 'date-fns';
 
 const ExpenseCard = ({ expense, onPress, onLongPress, style }) => {
+  if (!expense) return null;
+  
   const category = DEFAULT_CATEGORIES.find(c => c.id === expense.category) || DEFAULT_CATEGORIES[DEFAULT_CATEGORIES.length - 1];
   const formattedDate = format(new Date(expense.date || expense.createdAt), 'MMM dd, h:mm a');
-  const formattedAmount = expense.amount.toLocaleString('en-IN', {
+  const formattedAmount = (expense.amount || 0).toLocaleString('en-IN', {
     minimumFractionDigits: 0,
     maximumFractionDigits: 2,
   });

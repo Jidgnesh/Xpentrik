@@ -120,14 +120,15 @@ const AnalyticsScreen = () => {
   }, [loadData]);
 
   const formatCurrency = (amount) => {
+    if (amount == null || isNaN(amount)) return '0';
     return amount.toLocaleString('en-IN', {
       minimumFractionDigits: 0,
       maximumFractionDigits: 0,
     });
   };
 
-  const totalSpent = categoryData.reduce((sum, c) => sum + c.amount, 0);
-  const maxDailySpend = Math.max(...weeklyData.map(d => d.total), 1);
+  const totalSpent = categoryData.reduce((sum, c) => sum + (c.amount || 0), 0);
+  const maxDailySpend = Math.max(...weeklyData.map(d => d.total || 0), 1);
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -199,7 +200,7 @@ const AnalyticsScreen = () => {
                     style={[
                       styles.bar,
                       {
-                        height: `${(day.total / maxDailySpend) * 100}%`,
+                        height: `${Math.max(0, ((day.total || 0) / maxDailySpend) * 100)}%`,
                         backgroundColor: day.isToday ? colors.primary : colors.surfaceLight,
                         opacity: day.total > 0 ? 1 : 0.3,
                       },
@@ -244,7 +245,7 @@ const AnalyticsScreen = () => {
                   <View>
                     <Text style={styles.categoryName}>{category.name}</Text>
                     <Text style={styles.categoryPercentage}>
-                      {category.percentage.toFixed(1)}% of total
+                      {(category.percentage || 0).toFixed(1)}% of total
                     </Text>
                   </View>
                 </View>
@@ -265,12 +266,12 @@ const AnalyticsScreen = () => {
               <View style={styles.insightContent}>
                 <Text style={styles.insightTitle}>Month Comparison</Text>
                 <Text style={styles.insightValue}>
-                  {insights.monthOverMonthChange > 0 ? '+' : ''}
-                  {insights.monthOverMonthChange.toFixed(1)}% vs last month
+                  {(insights.monthOverMonthChange || 0) > 0 ? '+' : ''}
+                  {(insights.monthOverMonthChange || 0).toFixed(1)}% vs last month
                 </Text>
                 <Text style={styles.insightSubtext}>
-                  This month: ₹{formatCurrency(insights.currentMonthTotal)} • 
-                  Last month: ₹{formatCurrency(insights.lastMonthTotal)}
+                  This month: ₹{formatCurrency(insights.currentMonthTotal || 0)} • 
+                  Last month: ₹{formatCurrency(insights.lastMonthTotal || 0)}
                 </Text>
               </View>
             </View>
@@ -287,10 +288,10 @@ const AnalyticsScreen = () => {
               <View style={styles.insightContent}>
                 <Text style={styles.insightTitle}>Budget Status</Text>
                 <Text style={styles.insightValue}>
-                  {insights.budgetProgress.toFixed(0)}% used
+                  {(insights.budgetProgress || 0).toFixed(0)}% used
                 </Text>
                 <Text style={styles.insightSubtext}>
-                  {insights.daysRemaining} days remaining
+                  {insights.daysRemaining || 0} days remaining
                 </Text>
               </View>
             </View>
@@ -301,25 +302,25 @@ const AnalyticsScreen = () => {
               <View style={styles.insightContent}>
                 <Text style={styles.insightTitle}>Projected Monthly</Text>
                 <Text style={styles.insightValue}>
-                  ₹{formatCurrency(insights.projectedMonthly)}
+                  ₹{formatCurrency(insights.projectedMonthly || 0)}
                 </Text>
                 <Text style={styles.insightSubtext}>
-                  Avg daily: ₹{formatCurrency(insights.averageDailySpend)}
+                  Avg daily: ₹{formatCurrency(insights.averageDailySpend || 0)}
                 </Text>
               </View>
             </View>
 
             {/* Top Day */}
-            {insights.topDay && (
+            {insights.topDay && insights.topDay.date && (
               <View style={styles.insightCard}>
                 <Text style={styles.insightIcon}>📅</Text>
                 <View style={styles.insightContent}>
                   <Text style={styles.insightTitle}>Highest Spending Day</Text>
                   <Text style={styles.insightValue}>
-                    ₹{formatCurrency(insights.topDay.amount)}
+                    ₹{formatCurrency(insights.topDay.amount || 0)}
                   </Text>
                   <Text style={styles.insightSubtext}>
-                    {new Date(insights.topDay.date).toLocaleDateString('en-IN', { weekday: 'long', month: 'short', day: 'numeric' })}
+                    {insights.topDay.date ? new Date(insights.topDay.date).toLocaleDateString('en-IN', { weekday: 'long', month: 'short', day: 'numeric' }) : 'N/A'}
                   </Text>
                 </View>
               </View>
@@ -328,7 +329,7 @@ const AnalyticsScreen = () => {
             {/* Tips */}
             <View style={styles.tipsContainer}>
               <Text style={styles.tipsTitle}>💡 Tips</Text>
-              {insights.tips.map((tip, index) => (
+              {(insights.tips || []).map((tip, index) => (
                 <View key={index} style={styles.tipItem}>
                   <Text style={styles.tipText}>{tip}</Text>
                 </View>
@@ -384,7 +385,7 @@ const AnalyticsScreen = () => {
               </TouchableOpacity>
             </View>
             <Text style={styles.modalSubtitle}>
-              ₹{formatCurrency(selectedCategory?.amount || 0)} • {selectedCategory?.percentage.toFixed(1)}% of total
+              ₹{formatCurrency(selectedCategory?.amount || 0)} • {(selectedCategory?.percentage || 0).toFixed(1)}% of total
             </Text>
             <FlatList
               data={expenses.filter(e => 

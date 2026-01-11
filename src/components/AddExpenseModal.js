@@ -22,6 +22,7 @@ const AddExpenseModal = ({ visible, onClose, onExpenseAdded, expenseToEdit = nul
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
   const [category, setCategory] = useState('other');
+  const [otherDetails, setOtherDetails] = useState(''); // For "other" category details
   const [smsText, setSmsText] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -32,15 +33,29 @@ const AddExpenseModal = ({ visible, onClose, onExpenseAdded, expenseToEdit = nul
   useEffect(() => {
     if (visible && expenseToEdit) {
       // Populate form with expense data for editing
-      setAmount(expenseToEdit.amount.toString());
+      setAmount((expenseToEdit.amount || 0).toString());
       setDescription(expenseToEdit.description || '');
       setCategory(expenseToEdit.category || 'other');
+      // Extract otherDetails from description if it contains ": " (format: "Other: details")
+      const desc = expenseToEdit.description || '';
+      if (expenseToEdit.category === 'other' && desc.includes(': ')) {
+        const parts = desc.split(': ');
+        if (parts.length > 1) {
+          setDescription(parts[0] || 'Other');
+          setOtherDetails(parts.slice(1).join(': '));
+        } else {
+          setOtherDetails(expenseToEdit.otherDetails || '');
+        }
+      } else {
+        setOtherDetails(expenseToEdit.otherDetails || '');
+      }
       setMode('manual'); // Always use manual mode for editing
     } else if (!visible) {
       // Reset form when modal closes
       setAmount('');
       setDescription('');
       setCategory('other');
+      setOtherDetails('');
       setSmsText('');
       setError('');
       setParsedPreview(null);
@@ -49,7 +64,8 @@ const AddExpenseModal = ({ visible, onClose, onExpenseAdded, expenseToEdit = nul
   }, [visible, expenseToEdit]);
 
   const handleSaveManual = async () => {
-    if (!amount || parseFloat(amount) <= 0) {
+    const amountValue = parseFloat(amount);
+    if (!amount || isNaN(amountValue) || amountValue <= 0) {
       setError('Please enter a valid amount');
       return;
     }
@@ -58,20 +74,30 @@ const AddExpenseModal = ({ visible, onClose, onExpenseAdded, expenseToEdit = nul
     setError('');
 
     try {
+      // Build expense object
+      const expenseData = {
+        amount: amountValue,
+        description: description || 'Manual Entry',
+        category,
+      };
+      
+      // Add otherDetails if category is "other" and details are provided
+      if (category === 'other' && otherDetails.trim()) {
+        expenseData.otherDetails = otherDetails.trim();
+        expenseData.description = `${description || 'Other'}: ${otherDetails.trim()}`;
+      } else if (category === 'other') {
+        // Keep description as is if no otherDetails provided
+        expenseData.description = description || 'Other';
+      }
+      
       if (isEditMode) {
         // Update existing expense
-        const updated = await updateExpense(expenseToEdit.id, {
-          amount: parseFloat(amount),
-          description: description || 'Manual Entry',
-          category,
-        });
+        const updated = await updateExpense(expenseToEdit.id, expenseData);
         onExpenseAdded(updated);
       } else {
         // Create new expense
         const expense = await saveExpense({
-          amount: parseFloat(amount),
-          description: description || 'Manual Entry',
-          category,
+          ...expenseData,
           date: new Date().toISOString(),
           source: 'manual',
         });
@@ -193,6 +219,26 @@ const AddExpenseModal = ({ visible, onClose, onExpenseAdded, expenseToEdit = nul
                   selectedCategory={category}
                   onSelect={setCategory}
                 />
+
+                {/* Other Details - Show only when "other" category is selected */}
+                {category === 'other' && (
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.label}>Details (Optional)</Text>
+                    <TextInput
+                      style={styles.textInput}
+                      value={otherDetails}
+                      onChangeText={setOtherDetails}
+                      placeholder="Add more details about this expense..."
+                      placeholderTextColor={colors.textMuted}
+                      multiline
+                      numberOfLines={3}
+                      textAlignVertical="top"
+                    />
+                    <Text style={styles.hintText}>
+                      💡 This will be added to the description when saved
+                    </Text>
+                  </View>
+                )}
               </>
             ) : (
               <>
@@ -435,6 +481,13 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '700',
     color: colors.text,
+  },
+  hintText: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginTop: 6,
+    marginLeft: 4,
+    fontStyle: 'italic',
   },
 });
 
