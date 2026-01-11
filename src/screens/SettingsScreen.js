@@ -8,11 +8,22 @@ import {
   TextInput,
   Switch,
   Alert,
+  TextInput as TimeInput,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '../theme/colors';
 import { getSettings, saveSettings, clearAllData, getExpenses } from '../utils/storage';
 import { getSMSStatus, requestSMSPermission, scanForNewExpenses } from '../services/smsService';
+import { exportToCSV, createBackup } from '../utils/export';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system';
+import { restoreFromBackup } from '../utils/export';
+import {
+  requestNotificationPermissions,
+  scheduleDailyReminder,
+  cancelDailyReminder,
+  getNotificationSettings,
+} from '../services/notifications';
 
 const SettingsScreen = () => {
   const insets = useSafeAreaInsets();
@@ -25,6 +36,8 @@ const SettingsScreen = () => {
   const [expenseCount, setExpenseCount] = useState(0);
   const [budgetInput, setBudgetInput] = useState('');
   const [isScanning, setIsScanning] = useState(false);
+  const [notificationSettings, setNotificationSettings] = useState({ dailyReminder: { enabled: false } });
+  const [reminderTime, setReminderTime] = useState('20:00');
 
   useEffect(() => {
     loadSettings();
@@ -32,15 +45,22 @@ const SettingsScreen = () => {
 
   const loadSettings = async () => {
     try {
-      const [settingsData, smsStatusData, expenses] = await Promise.all([
+      const [settingsData, smsStatusData, expenses, notifSettings] = await Promise.all([
         getSettings(),
         getSMSStatus(),
         getExpenses(),
+        getNotificationSettings(),
       ]);
       setSettings(settingsData);
       setSmsStatus(smsStatusData);
       setExpenseCount(expenses.length);
       setBudgetInput(settingsData.monthlyBudget.toString());
+      setNotificationSettings(notifSettings);
+      if (notifSettings.dailyReminder?.enabled) {
+        const hour = String(notifSettings.dailyReminder.hour || 20).padStart(2, '0');
+        const minute = String(notifSettings.dailyReminder.minute || 0).padStart(2, '0');
+        setReminderTime(`${hour}:${minute}`);
+      }
     } catch (error) {
       console.error('Error loading settings:', error);
     }
@@ -145,78 +165,6 @@ const SettingsScreen = () => {
           <Text style={styles.subtitle}>Customize your experience</Text>
         </View>
 
-        {/* SMS Settings Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>📱 SMS Auto-Read</Text>
-          
-          <View style={styles.card}>
-            {/* Status Message */}
-            <View style={[
-              styles.iosNote, 
-              { backgroundColor: smsStatus?.permissionGranted ? colors.successMuted : colors.secondaryMuted }
-            ]}>
-              <Text style={[
-                styles.iosNoteText, 
-                { color: smsStatus?.permissionGranted ? colors.success : colors.secondary }
-              ]}>
-                {smsStatus?.message || 'Loading...'}
-              </Text>
-            </View>
-
-            {/* Enable Permission Button */}
-            {smsStatus?.supported && !smsStatus?.permissionGranted && (
-              <TouchableOpacity
-                style={[styles.scanButton, { marginTop: 12 }]}
-                onPress={async () => {
-                  const granted = await requestSMSPermission();
-                  if (granted) {
-                    Alert.alert('Success', 'SMS auto-read enabled! Expenses will be tracked automatically.');
-                    loadSettings();
-                  } else {
-                    Alert.alert('Permission Denied', 'Please enable SMS permission in Settings.');
-                  }
-                }}
-              >
-                <Text style={styles.scanButtonText}>🔓 Enable SMS Permission</Text>
-              </TouchableOpacity>
-            )}
-
-            {/* Scan Button */}
-            {smsStatus?.supported && smsStatus?.permissionGranted && (
-              <TouchableOpacity
-                style={[styles.scanButton, { marginTop: 12 }]}
-                onPress={handleScanSMS}
-                disabled={isScanning}
-              >
-                <Text style={styles.scanButtonText}>
-                  {isScanning ? 'Scanning...' : '🔍 Scan Past Messages'}
-                </Text>
-              </TouchableOpacity>
-            )}
-
-            {/* Expo Go Notice */}
-            {smsStatus?.isExpoGo && (
-              <View style={[styles.iosNote, { backgroundColor: colors.warningMuted, marginTop: 12 }]}>
-                <Text style={[styles.iosNoteText, { color: colors.warning }]}>
-                  ⚠️ Running in Expo Go - SMS auto-read disabled.{'\n\n'}
-                  Build APK for automatic SMS tracking:{'\n'}
-                  <Text style={{ fontFamily: 'monospace', fontSize: 11 }}>
-                    eas build --platform android --profile preview
-                  </Text>
-                </Text>
-              </View>
-            )}
-
-            {/* Manual Paste Info */}
-            <View style={[styles.iosNote, { backgroundColor: colors.surface, marginTop: 12 }]}>
-              <Text style={[styles.iosNoteText, { color: colors.textSecondary }]}>
-                💡 You can also manually paste SMS:{'\n'}
-                Tap + → "Paste SMS" → Paste bank message
-              </Text>
-            </View>
-          </View>
-        </View>
-
         {/* Budget Section */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>💰 Monthly Budget</Text>
@@ -256,9 +204,150 @@ const SettingsScreen = () => {
 
             <View style={styles.divider} />
 
+            {/* Export CSV */}
+            <TouchableOpacity
+              style={styles.exportButton}
+              onPress={async () => {
+                setIsExporting(true);
+                try {
+                  await exportToCSV();
+                  Alert.alert('Success', 'Expenses exported to CSV successfully!');
+                } catch (error) {
+                  Alert.alert('Error', 'Failed to export expenses: ' + error.message);
+                } finally {
+                  setIsExporting(false);
+                }
+              }}
+              disabled={isExporting}
+            >
+              <Text style={styles.exportButtonText}>
+                {isExporting ? 'Exporting...' : '📥 Export to CSV'}
+              </Text>
+            </TouchableOpacity>
+
+            {/* Backup */}
+            <TouchableOpacity
+              style={styles.exportButton}
+              onPress={async () => {
+                setIsBackingUp(true);
+                try {
+                  await createBackup();
+                  Alert.alert('Success', 'Backup created successfully!');
+                } catch (error) {
+                  Alert.alert('Error', 'Failed to create backup: ' + error.message);
+                } finally {
+                  setIsBackingUp(false);
+                }
+              }}
+              disabled={isBackingUp}
+            >
+              <Text style={styles.exportButtonText}>
+                {isBackingUp ? 'Backing up...' : '💾 Create Backup'}
+              </Text>
+            </TouchableOpacity>
+
+            {/* Restore */}
+            <TouchableOpacity
+              style={styles.exportButton}
+              onPress={async () => {
+                Alert.alert(
+                  'Restore Backup',
+                  'This will replace all your current data with the backup. Continue?',
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                      text: 'Restore',
+                      style: 'destructive',
+                      onPress: async () => {
+                        try {
+                          const result = await DocumentPicker.getDocumentAsync({
+                            type: 'application/json',
+                            copyToCacheDirectory: true,
+                          });
+                          
+                          if (!result.canceled && result.assets[0]) {
+                            const fileUri = result.assets[0].uri;
+                            const fileContent = await FileSystem.readAsStringAsync(fileUri);
+                            await restoreFromBackup(fileContent);
+                            Alert.alert('Success', 'Backup restored successfully!');
+                            loadSettings();
+                          }
+                        } catch (error) {
+                          Alert.alert('Error', 'Failed to restore backup: ' + error.message);
+                        }
+                      },
+                    },
+                  ]
+                );
+              }}
+            >
+              <Text style={styles.exportButtonText}>📤 Restore from Backup</Text>
+            </TouchableOpacity>
+
+            <View style={styles.divider} />
+
             <TouchableOpacity style={styles.dangerButton} onPress={handleClearData}>
               <Text style={styles.dangerButtonText}>🗑️ Clear All Data</Text>
             </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* Notifications Section */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>🔔 Notifications</Text>
+          
+          <View style={styles.card}>
+            <View style={styles.settingRow}>
+              <View style={styles.settingInfo}>
+                <Text style={styles.settingLabel}>Daily Reminder</Text>
+                <Text style={styles.settingDescription}>
+                  Get reminded to log your expenses daily
+                </Text>
+              </View>
+              <Switch
+                value={notificationSettings.dailyReminder?.enabled || false}
+                onValueChange={async (value) => {
+                  if (value) {
+                    const granted = await requestNotificationPermissions();
+                    if (granted) {
+                      const [hour, minute] = reminderTime.split(':').map(Number);
+                      await scheduleDailyReminder(hour, minute);
+                      await loadSettings();
+                    } else {
+                      Alert.alert('Permission Required', 'Please enable notifications in Settings');
+                    }
+                  } else {
+                    await cancelDailyReminder();
+                    await loadSettings();
+                  }
+                }}
+                trackColor={{ false: colors.border, true: colors.primary }}
+                thumbColor={colors.text}
+              />
+            </View>
+
+            {notificationSettings.dailyReminder?.enabled && (
+              <View style={styles.reminderTimeContainer}>
+                <Text style={styles.reminderTimeLabel}>Reminder Time</Text>
+                <TextInput
+                  style={styles.reminderTimeInput}
+                  value={reminderTime}
+                  onChangeText={setReminderTime}
+                  placeholder="20:00"
+                  placeholderTextColor={colors.textMuted}
+                  onBlur={async () => {
+                    const [hour, minute] = reminderTime.split(':').map(Number);
+                    if (!isNaN(hour) && !isNaN(minute) && hour >= 0 && hour < 24 && minute >= 0 && minute < 60) {
+                      await scheduleDailyReminder(hour, minute);
+                      await loadSettings();
+                    } else {
+                      Alert.alert('Invalid Time', 'Please enter time in HH:MM format');
+                      setReminderTime('20:00');
+                    }
+                  }}
+                />
+              </View>
+            )}
           </View>
         </View>
 
@@ -471,6 +560,39 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: colors.text,
+  },
+  exportButton: {
+    backgroundColor: colors.primaryMuted,
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: colors.primary,
+  },
+  exportButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.primary,
+  },
+  reminderTimeContainer: {
+    marginTop: 16,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  reminderTimeLabel: {
+    fontSize: 13,
+    color: colors.textSecondary,
+    marginBottom: 8,
+  },
+  reminderTimeInput: {
+    backgroundColor: colors.backgroundTertiary,
+    borderRadius: 12,
+    padding: 12,
+    fontSize: 16,
+    color: colors.text,
+    fontFamily: 'monospace',
   },
 });
 

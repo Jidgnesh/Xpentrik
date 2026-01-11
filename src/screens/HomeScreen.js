@@ -8,6 +8,9 @@ import {
   RefreshControl,
   StatusBar,
   Alert,
+  TextInput,
+  Modal,
+  ScrollView,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -16,6 +19,8 @@ import { colors } from '../theme/colors';
 import ExpenseCard from '../components/ExpenseCard';
 import StatCard from '../components/StatCard';
 import AddExpenseModal from '../components/AddExpenseModal';
+import SplitExpenseModal from '../components/SplitExpenseModal';
+import { getExpenseSplit } from '../utils/splitting';
 import { getExpenses, deleteExpense, getSettings, DEFAULT_CATEGORIES } from '../utils/storage';
 import { getSMSStatus, scanForNewExpenses, startSmsListener, stopSmsListener, requestSMSPermission, processPendingSms, syncWeekSms } from '../services/smsService';
 
@@ -27,9 +32,21 @@ const HomeScreen = () => {
   const [settings, setSettings] = useState({ currency: '₹', monthlyBudget: 50000 });
   const [refreshing, setRefreshing] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
+  const [editingExpense, setEditingExpense] = useState(null);
   const [smsStatus, setSmsStatus] = useState(null);
   const [smsListenerId, setSmsListenerId] = useState(null);
   const [syncing, setSyncing] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterModalVisible, setFilterModalVisible] = useState(false);
+  const [splitModalVisible, setSplitModalVisible] = useState(false);
+  const [splittingExpense, setSplittingExpense] = useState(null);
+  const [filters, setFilters] = useState({
+    category: null,
+    dateRange: null,
+    minAmount: '',
+    maxAmount: '',
+  });
+  const [filteredExpenses, setFilteredExpenses] = useState([]);
 
   // Handle new expense from SMS listener
   const handleNewSmsExpense = useCallback((expense) => {
@@ -91,6 +108,16 @@ const HomeScreen = () => {
         getSMSStatus(),
       ]);
 
+      // Check for splits and mark expenses
+      const { getSplitExpenses } = require('../utils/splitting');
+      const splits = await getSplitExpenses();
+      const expenseIdsWithSplits = new Set(splits.map(s => s.expenseId));
+      expensesData.forEach(e => {
+        if (expenseIdsWithSplits.has(e.id)) {
+          e.hasSplit = true;
+        }
+      });
+
       setExpenses(expensesData);
       setSettings(settingsData);
       setSmsStatus(smsStatusData);
@@ -108,6 +135,14 @@ const HomeScreen = () => {
       });
       const monthTotal = monthExpenses.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
       setMonthlyTotal(monthTotal);
+      
+      // Check budget and send notification if needed (async, don't wait)
+      if (settingsData.monthlyBudget > 0) {
+        const budgetPercentage = (monthTotal / settingsData.monthlyBudget) * 100;
+        if (budgetPercentage >= 80) {
+          sendBudgetAlert(budgetPercentage).catch(() => {});
+        }
+      }
 
       // Calculate today's total (only expenses, not income)
       const dayStart = startOfDay(now);
@@ -129,6 +164,11 @@ const HomeScreen = () => {
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  // Re-apply filters when search or filters change
+  useEffect(() => {
+    applyFilters(expenses);
+  }, [searchQuery, filters, expenses, applyFilters]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -154,6 +194,12 @@ const HomeScreen = () => {
 
   const handleExpenseAdded = (expense) => {
     loadData();
+    setEditingExpense(null);
+  };
+
+  const handleEditExpense = (expense) => {
+    setEditingExpense(expense);
+    setModalVisible(true);
   };
 
   const handleDeleteExpense = (expense) => {
@@ -355,11 +401,12 @@ const HomeScreen = () => {
       <StatusBar barStyle="light-content" backgroundColor={colors.background} />
       
       <FlatList
-        data={expenses.slice(0, 20)}
+        data={filteredExpenses.slice(0, 50)}
         keyExtractor={(item) => item.id}
         renderItem={({ item }) => (
           <ExpenseCard
             expense={item}
+            onPress={() => handleEditExpense(item)}
             onLongPress={() => handleDeleteExpense(item)}
           />
         )}
@@ -391,11 +438,26 @@ const HomeScreen = () => {
         </LinearGradient>
       </TouchableOpacity>
 
-      {/* Add Expense Modal */}
+      {/* Add/Edit Expense Modal */}
       <AddExpenseModal
         visible={modalVisible}
-        onClose={() => setModalVisible(false)}
+        onClose={() => {
+          setModalVisible(false);
+          setEditingExpense(null);
+        }}
         onExpenseAdded={handleExpenseAdded}
+        expenseToEdit={editingExpense}
+      />
+
+      {/* Split Expense Modal */}
+      <SplitExpenseModal
+        visible={splitModalVisible}
+        onClose={() => {
+          setSplitModalVisible(false);
+          setSplittingExpense(null);
+        }}
+        expense={splittingExpense}
+        onSplitAdded={loadData}
       />
     </View>
   );
@@ -619,6 +681,175 @@ const styles = StyleSheet.create({
     fontWeight: '300',
     color: colors.text,
     marginTop: -2,
+  },
+  searchContainer: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    marginBottom: 16,
+    gap: 12,
+  },
+  searchBar: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  searchIcon: {
+    fontSize: 18,
+    marginRight: 10,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 15,
+    color: colors.text,
+  },
+  clearIcon: {
+    fontSize: 16,
+    color: colors.textMuted,
+    padding: 4,
+  },
+  filterButton: {
+    width: 48,
+    height: 48,
+    backgroundColor: colors.surface,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'relative',
+  },
+  filterIcon: {
+    fontSize: 20,
+  },
+  filterBadge: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.primary,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'flex-end',
+  },
+  filterModalContainer: {
+    backgroundColor: colors.backgroundSecondary,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    maxHeight: '80%',
+    paddingBottom: 20,
+  },
+  filterModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  filterModalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  filterModalClose: {
+    fontSize: 20,
+    color: colors.textMuted,
+    padding: 8,
+  },
+  filterModalContent: {
+    padding: 20,
+  },
+  filterSection: {
+    marginBottom: 24,
+  },
+  filterLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.textSecondary,
+    marginBottom: 12,
+  },
+  categoryFilterGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  categoryFilterChip: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+    backgroundColor: colors.surface,
+    marginBottom: 8,
+  },
+  categoryFilterChipActive: {
+    backgroundColor: colors.primary,
+  },
+  categoryFilterText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  dateFilterGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  dateFilterButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: colors.surface,
+    marginBottom: 8,
+  },
+  dateFilterButtonActive: {
+    backgroundColor: colors.primary,
+  },
+  dateFilterText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  dateFilterTextActive: {
+    color: colors.text,
+  },
+  amountFilterRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  amountInputGroup: {
+    flex: 1,
+  },
+  amountLabel: {
+    fontSize: 13,
+    color: colors.textSecondary,
+    marginBottom: 8,
+  },
+  amountInput: {
+    backgroundColor: colors.surface,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    fontSize: 16,
+    color: colors.text,
+  },
+  clearFiltersButton: {
+    backgroundColor: colors.dangerMuted,
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: colors.danger,
+  },
+  clearFiltersText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.danger,
   },
 });
 

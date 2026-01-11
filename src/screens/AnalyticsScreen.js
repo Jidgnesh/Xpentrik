@@ -6,12 +6,16 @@ import {
   ScrollView,
   TouchableOpacity,
   Dimensions,
+  Modal,
+  FlatList,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { format, startOfMonth, endOfMonth, subMonths, startOfWeek, endOfWeek, eachDayOfInterval, isSameDay } from 'date-fns';
 import { colors } from '../theme/colors';
 import { getExpenses, DEFAULT_CATEGORIES } from '../utils/storage';
+import ExpenseCard from '../components/ExpenseCard';
+import { getSpendingInsights } from '../utils/insights';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -21,6 +25,11 @@ const AnalyticsScreen = () => {
   const [selectedPeriod, setSelectedPeriod] = useState('month'); // 'week', 'month', 'year'
   const [categoryData, setCategoryData] = useState([]);
   const [weeklyData, setWeeklyData] = useState([]);
+  const [selectedCategory, setSelectedCategory] = useState(null);
+  const [selectedDay, setSelectedDay] = useState(null);
+  const [categoryModalVisible, setCategoryModalVisible] = useState(false);
+  const [dayModalVisible, setDayModalVisible] = useState(false);
+  const [insights, setInsights] = useState(null);
 
   const loadData = useCallback(async () => {
     try {
@@ -89,12 +98,18 @@ const AnalyticsScreen = () => {
         return {
           day: format(day, 'EEE'),
           date: format(day, 'd'),
+          dateObj: day,
           total,
           isToday: isSameDay(day, now),
+          expenses: dayExpenses,
         };
       });
 
       setWeeklyData(dailyTotals);
+      
+      // Load insights
+      const insightsData = await getSpendingInsights();
+      setInsights(insightsData);
     } catch (error) {
       console.error('Error loading analytics:', error);
     }
@@ -168,7 +183,17 @@ const AnalyticsScreen = () => {
           <Text style={styles.sectionTitle}>Weekly Overview</Text>
           <View style={styles.chart}>
             {weeklyData.map((day, index) => (
-              <View key={index} style={styles.chartColumn}>
+              <TouchableOpacity
+                key={index}
+                style={styles.chartColumn}
+                onPress={() => {
+                  if (day.total > 0) {
+                    setSelectedDay(day);
+                    setDayModalVisible(true);
+                  }
+                }}
+                activeOpacity={day.total > 0 ? 0.7 : 1}
+              >
                 <View style={styles.barContainer}>
                   <View
                     style={[
@@ -176,15 +201,19 @@ const AnalyticsScreen = () => {
                       {
                         height: `${(day.total / maxDailySpend) * 100}%`,
                         backgroundColor: day.isToday ? colors.primary : colors.surfaceLight,
+                        opacity: day.total > 0 ? 1 : 0.3,
                       },
                     ]}
                   />
+                  {day.total > 0 && (
+                    <Text style={styles.barAmount}>₹{formatCurrency(day.total)}</Text>
+                  )}
                 </View>
                 <Text style={[styles.chartDay, day.isToday && styles.chartDayActive]}>
                   {day.day}
                 </Text>
                 <Text style={styles.chartDate}>{day.date}</Text>
-              </View>
+              </TouchableOpacity>
             ))}
           </View>
         </View>
@@ -199,7 +228,15 @@ const AnalyticsScreen = () => {
             </View>
           ) : (
             categoryData.map((category, index) => (
-              <View key={category.id} style={styles.categoryItem}>
+              <TouchableOpacity
+                key={category.id}
+                style={styles.categoryItem}
+                onPress={() => {
+                  setSelectedCategory(category);
+                  setCategoryModalVisible(true);
+                }}
+                activeOpacity={0.7}
+              >
                 <View style={styles.categoryLeft}>
                   <View style={[styles.categoryIcon, { backgroundColor: `${category.color}20` }]}>
                     <Text style={styles.categoryEmoji}>{category.icon}</Text>
@@ -212,14 +249,97 @@ const AnalyticsScreen = () => {
                   </View>
                 </View>
                 <Text style={styles.categoryAmount}>₹{formatCurrency(category.amount)}</Text>
-              </View>
+              </TouchableOpacity>
             ))
           )}
         </View>
 
-        {/* Insights */}
+        {/* Spending Insights */}
+        {insights && (
+          <View style={[styles.section, styles.insightsSection]}>
+            <Text style={styles.sectionTitle}>💡 Spending Insights</Text>
+            
+            {/* Month Comparison */}
+            <View style={styles.insightCard}>
+              <Text style={styles.insightIcon}>📊</Text>
+              <View style={styles.insightContent}>
+                <Text style={styles.insightTitle}>Month Comparison</Text>
+                <Text style={styles.insightValue}>
+                  {insights.monthOverMonthChange > 0 ? '+' : ''}
+                  {insights.monthOverMonthChange.toFixed(1)}% vs last month
+                </Text>
+                <Text style={styles.insightSubtext}>
+                  This month: ₹{formatCurrency(insights.currentMonthTotal)} • 
+                  Last month: ₹{formatCurrency(insights.lastMonthTotal)}
+                </Text>
+              </View>
+            </View>
+
+            {/* Budget Status */}
+            <View style={[
+              styles.insightCard,
+              insights.isOverBudget && styles.insightCardDanger,
+              insights.isNearBudget && styles.insightCardWarning
+            ]}>
+              <Text style={styles.insightIcon}>
+                {insights.isOverBudget ? '⚠️' : insights.isNearBudget ? '⚡' : '✅'}
+              </Text>
+              <View style={styles.insightContent}>
+                <Text style={styles.insightTitle}>Budget Status</Text>
+                <Text style={styles.insightValue}>
+                  {insights.budgetProgress.toFixed(0)}% used
+                </Text>
+                <Text style={styles.insightSubtext}>
+                  {insights.daysRemaining} days remaining
+                </Text>
+              </View>
+            </View>
+
+            {/* Projection */}
+            <View style={styles.insightCard}>
+              <Text style={styles.insightIcon}>🔮</Text>
+              <View style={styles.insightContent}>
+                <Text style={styles.insightTitle}>Projected Monthly</Text>
+                <Text style={styles.insightValue}>
+                  ₹{formatCurrency(insights.projectedMonthly)}
+                </Text>
+                <Text style={styles.insightSubtext}>
+                  Avg daily: ₹{formatCurrency(insights.averageDailySpend)}
+                </Text>
+              </View>
+            </View>
+
+            {/* Top Day */}
+            {insights.topDay && (
+              <View style={styles.insightCard}>
+                <Text style={styles.insightIcon}>📅</Text>
+                <View style={styles.insightContent}>
+                  <Text style={styles.insightTitle}>Highest Spending Day</Text>
+                  <Text style={styles.insightValue}>
+                    ₹{formatCurrency(insights.topDay.amount)}
+                  </Text>
+                  <Text style={styles.insightSubtext}>
+                    {new Date(insights.topDay.date).toLocaleDateString('en-IN', { weekday: 'long', month: 'short', day: 'numeric' })}
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {/* Tips */}
+            <View style={styles.tipsContainer}>
+              <Text style={styles.tipsTitle}>💡 Tips</Text>
+              {insights.tips.map((tip, index) => (
+                <View key={index} style={styles.tipItem}>
+                  <Text style={styles.tipText}>{tip}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {/* Quick Insights (Legacy) */}
         <View style={[styles.section, styles.insightsSection]}>
-          <Text style={styles.sectionTitle}>Quick Insights</Text>
+          <Text style={styles.sectionTitle}>Quick Stats</Text>
           
           <View style={styles.insightCard}>
             <Text style={styles.insightIcon}>📈</Text>
@@ -227,16 +347,6 @@ const AnalyticsScreen = () => {
               <Text style={styles.insightTitle}>Top Category</Text>
               <Text style={styles.insightValue}>
                 {categoryData[0]?.name || 'N/A'} - ₹{formatCurrency(categoryData[0]?.amount || 0)}
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.insightCard}>
-            <Text style={styles.insightIcon}>💰</Text>
-            <View style={styles.insightContent}>
-              <Text style={styles.insightTitle}>Average Daily</Text>
-              <Text style={styles.insightValue}>
-                ₹{formatCurrency(totalSpent / (selectedPeriod === 'week' ? 7 : selectedPeriod === 'month' ? 30 : 365))}
               </Text>
             </View>
           </View>
@@ -252,6 +362,88 @@ const AnalyticsScreen = () => {
 
         <View style={{ height: 40 }} />
       </ScrollView>
+
+      {/* Category Transactions Modal */}
+      <Modal
+        visible={categoryModalVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setCategoryModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>
+                {selectedCategory?.icon} {selectedCategory?.name}
+              </Text>
+              <TouchableOpacity
+                onPress={() => setCategoryModalVisible(false)}
+                style={styles.modalCloseButton}
+              >
+                <Text style={styles.modalCloseText}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.modalSubtitle}>
+              ₹{formatCurrency(selectedCategory?.amount || 0)} • {selectedCategory?.percentage.toFixed(1)}% of total
+            </Text>
+            <FlatList
+              data={expenses.filter(e => 
+                e.category === selectedCategory?.id && !e.isIncome
+              )}
+              keyExtractor={(item) => item.id}
+              renderItem={({ item }) => (
+                <ExpenseCard expense={item} />
+              )}
+              ListEmptyComponent={
+                <View style={styles.emptyModal}>
+                  <Text style={styles.emptyModalText}>No transactions in this category</Text>
+                </View>
+              }
+              style={styles.modalList}
+            />
+          </View>
+        </View>
+      </Modal>
+
+      {/* Day Transactions Modal */}
+      <Modal
+        visible={dayModalVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setDayModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>
+                {selectedDay ? format(selectedDay.dateObj, 'EEEE, MMMM d') : ''}
+              </Text>
+              <TouchableOpacity
+                onPress={() => setDayModalVisible(false)}
+                style={styles.modalCloseButton}
+              >
+                <Text style={styles.modalCloseText}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.modalSubtitle}>
+              ₹{formatCurrency(selectedDay?.total || 0)} • {selectedDay?.expenses?.length || 0} transactions
+            </Text>
+            <FlatList
+              data={selectedDay?.expenses || []}
+              keyExtractor={(item) => item.id}
+              renderItem={({ item }) => (
+                <ExpenseCard expense={item} />
+              )}
+              ListEmptyComponent={
+                <View style={styles.emptyModal}>
+                  <Text style={styles.emptyModalText}>No transactions on this day</Text>
+                </View>
+              }
+              style={styles.modalList}
+            />
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 };
@@ -366,6 +558,7 @@ const styles = StyleSheet.create({
     width: 24,
     justifyContent: 'flex-end',
     marginBottom: 8,
+    alignItems: 'center',
   },
   bar: {
     width: '100%',
@@ -461,6 +654,105 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '700',
     color: colors.text,
+  },
+  insightSubtext: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginTop: 4,
+  },
+  insightCardDanger: {
+    backgroundColor: colors.dangerMuted,
+    borderWidth: 1,
+    borderColor: colors.danger,
+  },
+  insightCardWarning: {
+    backgroundColor: colors.warningMuted,
+    borderWidth: 1,
+    borderColor: colors.warning,
+  },
+  tipsContainer: {
+    backgroundColor: colors.surface,
+    borderRadius: 16,
+    padding: 16,
+    marginTop: 12,
+  },
+  tipsTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: 12,
+  },
+  tipItem: {
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  tipText: {
+    fontSize: 14,
+    color: colors.textSecondary,
+    lineHeight: 20,
+  },
+  barAmount: {
+    fontSize: 8,
+    fontWeight: '600',
+    color: colors.text,
+    marginTop: 2,
+    textAlign: 'center',
+    position: 'absolute',
+    top: -16,
+    width: 40,
+    left: -8,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'flex-end',
+  },
+  modalContainer: {
+    backgroundColor: colors.backgroundSecondary,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    maxHeight: '90%',
+    paddingBottom: 20,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: colors.text,
+    flex: 1,
+  },
+  modalCloseButton: {
+    padding: 8,
+  },
+  modalCloseText: {
+    fontSize: 20,
+    color: colors.textMuted,
+  },
+  modalSubtitle: {
+    fontSize: 14,
+    color: colors.textSecondary,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 16,
+  },
+  modalList: {
+    paddingHorizontal: 16,
+  },
+  emptyModal: {
+    padding: 40,
+    alignItems: 'center',
+  },
+  emptyModalText: {
+    fontSize: 15,
+    color: colors.textMuted,
   },
 });
 

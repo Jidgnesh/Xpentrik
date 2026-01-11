@@ -38,6 +38,11 @@ const ExpenseCard = ({ expense, onPress, onLongPress, style }) => {
                 <Text style={styles.smsBadgeText}>SMS</Text>
               </View>
             )}
+            {expense.hasSplit && (
+              <View style={styles.splitBadge}>
+                <Text style={styles.splitBadgeText}>👥 Split</Text>
+              </View>
+            )}
           </View>
           <Text style={styles.date}>{formattedDate}</Text>
         </View>
@@ -115,6 +120,18 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
     color: colors.primary,
+  },
+  splitBadge: {
+    backgroundColor: colors.secondaryMuted,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginLeft: 8,
+  },
+  splitBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: colors.secondary,
   },
   date: {
     fontSize: 12,

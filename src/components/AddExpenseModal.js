@@ -14,10 +14,10 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { colors } from '../theme/colors';
 import CategoryPicker from './CategoryPicker';
-import { saveExpense } from '../utils/storage';
+import { saveExpense, updateExpense } from '../utils/storage';
 import { processManualSMS } from '../services/smsService';
 
-const AddExpenseModal = ({ visible, onClose, onExpenseAdded }) => {
+const AddExpenseModal = ({ visible, onClose, onExpenseAdded, expenseToEdit = null }) => {
   const [mode, setMode] = useState('manual'); // 'manual' or 'sms'
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
@@ -27,8 +27,16 @@ const AddExpenseModal = ({ visible, onClose, onExpenseAdded }) => {
   const [error, setError] = useState('');
   const [parsedPreview, setParsedPreview] = useState(null);
 
+  const isEditMode = expenseToEdit !== null;
+
   useEffect(() => {
-    if (!visible) {
+    if (visible && expenseToEdit) {
+      // Populate form with expense data for editing
+      setAmount(expenseToEdit.amount.toString());
+      setDescription(expenseToEdit.description || '');
+      setCategory(expenseToEdit.category || 'other');
+      setMode('manual'); // Always use manual mode for editing
+    } else if (!visible) {
       // Reset form when modal closes
       setAmount('');
       setDescription('');
@@ -38,7 +46,7 @@ const AddExpenseModal = ({ visible, onClose, onExpenseAdded }) => {
       setParsedPreview(null);
       setMode('manual');
     }
-  }, [visible]);
+  }, [visible, expenseToEdit]);
 
   const handleSaveManual = async () => {
     if (!amount || parseFloat(amount) <= 0) {
@@ -50,17 +58,28 @@ const AddExpenseModal = ({ visible, onClose, onExpenseAdded }) => {
     setError('');
 
     try {
-      const expense = await saveExpense({
-        amount: parseFloat(amount),
-        description: description || 'Manual Entry',
-        category,
-        date: new Date().toISOString(),
-        source: 'manual',
-      });
-      onExpenseAdded(expense);
+      if (isEditMode) {
+        // Update existing expense
+        const updated = await updateExpense(expenseToEdit.id, {
+          amount: parseFloat(amount),
+          description: description || 'Manual Entry',
+          category,
+        });
+        onExpenseAdded(updated);
+      } else {
+        // Create new expense
+        const expense = await saveExpense({
+          amount: parseFloat(amount),
+          description: description || 'Manual Entry',
+          category,
+          date: new Date().toISOString(),
+          source: 'manual',
+        });
+        onExpenseAdded(expense);
+      }
       onClose();
     } catch (err) {
-      setError('Failed to save expense');
+      setError(isEditMode ? 'Failed to update expense' : 'Failed to save expense');
     } finally {
       setLoading(false);
     }
@@ -109,13 +128,14 @@ const AddExpenseModal = ({ visible, onClose, onExpenseAdded }) => {
           {/* Header */}
           <View style={styles.header}>
             <View style={styles.handle} />
-            <Text style={styles.title}>Add Expense</Text>
+            <Text style={styles.title}>{isEditMode ? 'Edit Expense' : 'Add Expense'}</Text>
             <TouchableOpacity onPress={onClose} style={styles.closeButton}>
               <Text style={styles.closeText}>✕</Text>
             </TouchableOpacity>
           </View>
 
-          {/* Mode Toggle */}
+          {/* Mode Toggle - Hide in edit mode */}
+          {!isEditMode && (
           <View style={styles.modeToggle}>
             <TouchableOpacity
               style={[styles.modeButton, mode === 'manual' && styles.modeButtonActive]}
@@ -134,6 +154,7 @@ const AddExpenseModal = ({ visible, onClose, onExpenseAdded }) => {
               </Text>
             </TouchableOpacity>
           </View>
+          )}
 
           <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
             {mode === 'manual' ? (
@@ -242,7 +263,7 @@ const AddExpenseModal = ({ visible, onClose, onExpenseAdded }) => {
                 <ActivityIndicator color={colors.text} />
               ) : (
                 <Text style={styles.saveButtonText}>
-                  {mode === 'manual' ? 'Save Expense' : 'Extract & Save'}
+                  {isEditMode ? 'Update Expense' : mode === 'manual' ? 'Save Expense' : 'Extract & Save'}
                 </Text>
               )}
             </LinearGradient>
