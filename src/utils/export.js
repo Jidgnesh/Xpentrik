@@ -99,14 +99,19 @@ export const restoreFromBackup = async (backupJson) => {
       throw new Error('Invalid backup format');
     }
     
-    // Import expenses and settings
-    const { saveExpense, saveSettings } = require('./storage');
+    // Import expenses and settings - use dynamic import to avoid circular dependency
+    const storageModule = await import('./storage');
+    const { saveExpense, saveSettings, clearAllData } = storageModule;
     
-    // Clear existing data and restore
+    // Clear existing data first
+    await clearAllData();
+    
+    // Restore expenses
     for (const expense of backup.expenses) {
       await saveExpense(expense);
     }
     
+    // Restore settings
     if (backup.settings) {
       await saveSettings(backup.settings);
     }

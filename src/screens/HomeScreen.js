@@ -23,6 +23,7 @@ import SplitExpenseModal from '../components/SplitExpenseModal';
 import { getExpenseSplit } from '../utils/splitting';
 import { getExpenses, deleteExpense, getSettings, DEFAULT_CATEGORIES } from '../utils/storage';
 import { getSMSStatus, scanForNewExpenses, startSmsListener, stopSmsListener, requestSMSPermission, processPendingSms, syncWeekSms } from '../services/smsService';
+import { sendBudgetAlert } from '../services/notifications';
 
 const HomeScreen = () => {
   const insets = useSafeAreaInsets();
@@ -58,7 +59,7 @@ const HomeScreen = () => {
       [{ text: 'OK' }]
     );
     loadData();
-  }, []);
+  }, [loadData]);
 
   // Process pending SMS and start listener on mount
   useEffect(() => {
@@ -100,6 +101,73 @@ const HomeScreen = () => {
     };
   }, [handleNewSmsExpense]);
 
+  // Apply filters and search
+  const applyFilters = useCallback((expensesData) => {
+    if (!expensesData || !Array.isArray(expensesData)) {
+      setFilteredExpenses([]);
+      return;
+    }
+    let filtered = [...expensesData];
+
+    // Search filter
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase();
+      filtered = filtered.filter(e => 
+        (e.description || '').toLowerCase().includes(query) ||
+        (e.merchant || '').toLowerCase().includes(query) ||
+        e.amount.toString().includes(query) ||
+        (e.category || '').toLowerCase().includes(query)
+      );
+    }
+
+    // Category filter
+    if (filters.category) {
+      filtered = filtered.filter(e => e.category === filters.category);
+    }
+
+    // Amount filters
+    if (filters.minAmount) {
+      const min = parseFloat(filters.minAmount);
+      if (!isNaN(min)) {
+        filtered = filtered.filter(e => e.amount >= min);
+      }
+    }
+    if (filters.maxAmount) {
+      const max = parseFloat(filters.maxAmount);
+      if (!isNaN(max)) {
+        filtered = filtered.filter(e => e.amount <= max);
+      }
+    }
+
+    // Date range filter
+    if (filters.dateRange) {
+      const now = new Date();
+      let startDate, endDate;
+      
+      if (filters.dateRange === 'today') {
+        startDate = startOfDay(now);
+        endDate = endOfDay(now);
+      } else if (filters.dateRange === 'week') {
+        const weekStart = new Date(now);
+        weekStart.setDate(now.getDate() - 7);
+        startDate = startOfDay(weekStart);
+        endDate = endOfDay(now);
+      } else if (filters.dateRange === 'month') {
+        startDate = startOfMonth(now);
+        endDate = endOfMonth(now);
+      }
+      
+      if (startDate && endDate) {
+        filtered = filtered.filter(e => {
+          const date = new Date(e.date || e.createdAt);
+          return date >= startDate && date <= endDate;
+        });
+      }
+    }
+
+    setFilteredExpenses(filtered);
+  }, [searchQuery, filters]);
+
   const loadData = useCallback(async () => {
     try {
       const [expensesData, settingsData, smsStatusData] = await Promise.all([
@@ -109,18 +177,25 @@ const HomeScreen = () => {
       ]);
 
       // Check for splits and mark expenses
-      const { getSplitExpenses } = require('../utils/splitting');
-      const splits = await getSplitExpenses();
-      const expenseIdsWithSplits = new Set(splits.map(s => s.expenseId));
-      expensesData.forEach(e => {
-        if (expenseIdsWithSplits.has(e.id)) {
-          e.hasSplit = true;
-        }
-      });
+      try {
+        const { getSplitExpenses } = await import('../utils/splitting');
+        const splits = await getSplitExpenses();
+        const expenseIdsWithSplits = new Set(splits.map(s => s.expenseId));
+        expensesData.forEach(e => {
+          if (expenseIdsWithSplits.has(e.id)) {
+            e.hasSplit = true;
+          }
+        });
+      } catch (error) {
+        console.error('Error loading splits:', error);
+      }
 
       setExpenses(expensesData);
       setSettings(settingsData);
       setSmsStatus(smsStatusData);
+      
+      // Apply filters after loading
+      applyFilters(expensesData);
 
       // Calculate monthly total (only expenses, not income)
       const now = new Date();
@@ -140,7 +215,9 @@ const HomeScreen = () => {
       if (settingsData.monthlyBudget > 0) {
         const budgetPercentage = (monthTotal / settingsData.monthlyBudget) * 100;
         if (budgetPercentage >= 80) {
-          sendBudgetAlert(budgetPercentage).catch(() => {});
+          sendBudgetAlert(budgetPercentage).catch((err) => {
+            console.error('Budget alert error:', err);
+          });
         }
       }
 
@@ -158,8 +235,13 @@ const HomeScreen = () => {
       setTodayTotal(dayTotal);
     } catch (error) {
       console.error('Error loading data:', error);
+      // Set empty arrays on error to prevent crashes
+      setExpenses([]);
+      setFilteredExpenses([]);
+      setMonthlyTotal(0);
+      setTodayTotal(0);
     }
-  }, []);
+  }, [applyFilters]);
 
   useEffect(() => {
     loadData();
@@ -167,7 +249,11 @@ const HomeScreen = () => {
 
   // Re-apply filters when search or filters change
   useEffect(() => {
-    applyFilters(expenses);
+    if (expenses && expenses.length > 0) {
+      applyFilters(expenses);
+    } else if (expenses && expenses.length === 0) {
+      setFilteredExpenses([]);
+    }
   }, [searchQuery, filters, expenses, applyFilters]);
 
   const onRefresh = useCallback(async () => {
@@ -192,10 +278,10 @@ const HomeScreen = () => {
     setRefreshing(false);
   }, [loadData, smsStatus]);
 
-  const handleExpenseAdded = (expense) => {
+  const handleExpenseAdded = useCallback((expense) => {
     loadData();
     setEditingExpense(null);
-  };
+  }, [loadData]);
 
   const handleEditExpense = (expense) => {
     setEditingExpense(expense);
@@ -401,8 +487,8 @@ const HomeScreen = () => {
       <StatusBar barStyle="light-content" backgroundColor={colors.background} />
       
       <FlatList
-        data={filteredExpenses.slice(0, 50)}
-        keyExtractor={(item) => item.id}
+        data={filteredExpenses && filteredExpenses.length > 0 ? filteredExpenses.slice(0, 50) : (expenses || []).slice(0, 20)}
+        keyExtractor={(item) => item.id || Math.random().toString()}
         renderItem={({ item }) => (
           <ExpenseCard
             expense={item}

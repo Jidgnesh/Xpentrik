@@ -1,5 +1,4 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { sendExpenseAddedNotification } from '../services/notifications';
 
 const EXPENSES_KEY = '@xpentrik_expenses';
 const CATEGORIES_KEY = '@xpentrik_categories';
@@ -43,13 +42,15 @@ export const saveExpense = async (expense) => {
     expenses.unshift(newExpense);
     await AsyncStorage.setItem(EXPENSES_KEY, JSON.stringify(expenses));
     
-    // Send notification (async, don't wait)
-    try {
-      const { sendExpenseAddedNotification } = require('../services/notifications');
-      sendExpenseAddedNotification(newExpense);
-    } catch (error) {
-      // Ignore notification errors
-    }
+    // Send notification (async, don't wait) - using dynamic import to avoid circular dependency
+    Promise.resolve().then(async () => {
+      try {
+        const { sendExpenseAddedNotification } = await import('../services/notifications');
+        sendExpenseAddedNotification(newExpense);
+      } catch (error) {
+        // Ignore notification errors
+      }
+    });
     
     return newExpense;
   } catch (error) {
